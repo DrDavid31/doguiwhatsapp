@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Checador WhatsApp Empresarial</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-box">
+        <span class="brand-mark">W</span>
+        <h1>Checador WA</h1>
+        <p>Acceso de administradores, RRHH y supervisores.</p>
+        <label>
+          Usuario
+          <input id="loginUser" value="admin@empresa.mx" required />
+        </label>
+        <label>
+          Contrasena
+          <input id="loginPassword" type="password" value="admin123" required />
+        </label>
+        <label>
+          Rol
+          <select id="loginRole">
+            <option value="Dueno">Dueno</option>
+            <option value="RRHH">RRHH</option>
+            <option value="Supervisor">Supervisor</option>
+            <option value="Empleado">Empleado</option>
+          </select>
+        </label>
+        <button class="primary" type="submit">Entrar</button>
+      </form>
+    </section>
+
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">W</span>
+        <div>
+          <strong>Checador WA</strong>
+          <span>Control de asistencia</span>
+        </div>
+      </div>
+      <nav>
+        <a href="#tablero" class="active">Tablero</a>
+        <a href="#whatsapp">WhatsApp</a>
+        <a href="#empleados">Empleados</a>
+        <a href="#incidencias">Incidencias</a>
+        <a href="#reportes">Reportes</a>
+        <a href="#configuracion">Configuracion</a>
+        <a href="#integraciones">Integraciones</a>
+        <a href="#auditoria">Auditoria</a>
+      </nav>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="sessionLabel">Empresa Demo</p>
+          <h1>Reloj checador por WhatsApp</h1>
+        </div>
+        <div class="top-actions">
+          <select id="companySelect"></select>
+          <select id="branchSelect"></select>
+          <button id="exportCsv" class="primary">Exportar nomina</button>
+          <button id="logoutButton">Salir</button>
+        </div>
+      </header>
+
+      <section id="tablero" class="grid metrics">
+        <article><span>En turno</span><strong id="metricWorking">0</strong></article>
+        <article><span>Retardos hoy</span><strong id="metricLate">0</strong></article>
+        <article><span>Horas extra</span><strong id="metricOvertime">0.0</strong></article>
+        <article><span>Incidencias abiertas</span><strong id="metricOpenIssues">0</strong></article>
+        <article><span>Alertas activas</span><strong id="metricAlerts">0</strong></article>
+      </section>
+
+      <section class="layout">
+        <article id="whatsapp" class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Simulador WhatsApp</h2>
+              <p>Recibe comandos, valida telefono, ubicacion, geocerca y evidencia.</p>
+            </div>
+            <span class="status">24/7</span>
+          </div>
+
+          <form id="messageForm" class="form">
+            <label>Empleado<select id="employeeSelect"></select></label>
+            <label>Telefono entrante<input id="incomingPhone" placeholder="+52..." /></label>
+            <label>Mensaje<input id="messageText" placeholder="Ej. entrar, salir, permiso medico" required /></label>
+            <div class="form-grid">
+              <label>Latitud<input id="latInput" type="number" step="0.000001" placeholder="19.432608" /></label>
+              <label>Longitud<input id="lngInput" type="number" step="0.000001" placeholder="-99.133209" /></label>
+            </div>
+            <label>Ubicacion textual<input id="locationText" placeholder="Ej. Planta Norte, CDMX" /></label>
+            <label class="check"><input id="selfieCheck" type="checkbox" /> Selfie/evidencia adjunta</label>
+            <button class="primary" type="submit">Procesar mensaje</button>
+          </form>
+
+          <div class="quick-actions">
+            <button data-message="entrar">Entrada</button>
+            <button data-message="salir">Salida</button>
+            <button data-message="descanso">Descanso</button>
+            <button data-message="regreso">Regreso</button>
+            <button data-message="permiso medico">Permiso</button>
+            <button data-message="vacaciones 10/06 al 12/06">Vacaciones</button>
+            <button data-message="incapacidad IMSS">Incapacidad</button>
+          </div>
+          <div id="chatLog" class="chat"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Registros en tiempo real</h2>
+              <p>Entradas, salidas, descansos, ubicacion, evidencia y validaciones.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th><th>Empleado</th><th>Evento</th><th>Hora</th><th>Sucursal</th><th>Ubicacion</th><th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="recordsTable"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="layout">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Quien esta trabajando ahora</h2>
+              <p>Vista rapida para supervisores.</p>
+            </div>
+          </div>
+          <div id="workingNowList" class="stack"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Alertas automaticas</h2>
+              <p>No llego, olvido salida, duplicados, geocerca y evidencia faltante.</p>
+            </div>
+          </div>
+          <div id="alertsList" class="stack"></div>
+        </article>
+      </section>
+
+      <section id="empleados" class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Empleados, roles y jornadas</h2>
+            <p>Alta, edicion, baja logica, telefono autorizado, turno, area, saldo y sucursal.</p>
+          </div>
+          <button id="cancelEditEmployee">Cancelar edicion</button>
+        </div>
+        <form id="employeeForm" class="employee-form">
+          <input id="employeeId" type="hidden" />
+          <input id="employeeName" placeholder="Nombre" required />
+          <input id="employeePhone" placeholder="+52..." required />
+          <input id="employeeArea" placeholder="Area" required />
+          <select id="employeeBranch"></select>
+          <select id="employeeMode"><option>Presencial</option><option>Remoto</option><option>Hibrido</option></select>
+          <select id="employeeRole"><option>Empleado</option><option>Supervisor</option><option>RRHH</option></select>
+          <input id="employeeStart" type="time" value="09:00" required />
+          <input id="employeeEnd" type="time" value="18:00" required />
+          <input id="employeeVacation" type="number" min="0" value="12" title="Dias de vacaciones" />
+          <button class="primary" type="submit">Guardar</button>
+        </form>
+        <div id="employeeList" class="employee-list"></div>
+      </section>
+
+      <section id="incidencias" class="layout">
+        <article class="panel">
+          <h2>Incidencias de nomina</h2>
+          <div id="issuesList" class="stack"></div>
+        </article>
+        <article class="panel">
+          <h2>Saldos y permisos</h2>
+          <div id="balancesList" class="stack"></div>
+        </article>
+      </section>
+
+      <section id="reportes" class="layout">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Reportes por periodo</h2>
+              <p>Filtra por fechas, sucursal, area y genera resumen para nomina.</p>
+            </div>
+          </div>
+          <form id="reportFilters" class="report-filters">
+            <input id="reportFrom" type="date" />
+            <input id="reportTo" type="date" />
+            <select id="reportArea"></select>
+            <button type="submit">Actualizar</button>
+          </form>
+          <div id="summaryList" class="stack"></div>
+        </article>
+        <article class="panel">
+          <h2>Calendario de asistencia</h2>
+          <div id="calendarGrid" class="calendar"></div>
+        </article>
+      </section>
+
+      <section id="configuracion" class="layout">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Politicas laborales</h2>
+              <p>Tolerancia, horas extra, geocerca, evidencia y salida olvidada.</p>
+            </div>
+          </div>
+          <form id="policyForm" class="form">
+            <div class="form-grid">
+              <label>Tolerancia entrada (min)<input id="policyTolerance" type="number" min="0" /></label>
+              <label>Salida olvidada despues de (h)<input id="policyForgottenExit" type="number" min="1" /></label>
+              <label>Radio geocerca (m)<input id="policyRadius" type="number" min="50" /></label>
+              <label>Inicio horas extra despues de (h)<input id="policyOvertimeAfter" type="number" min="1" step="0.5" /></label>
+            </div>
+            <label class="check"><input id="policyRequireGps" type="checkbox" /> Requerir GPS para checar</label>
+            <label class="check"><input id="policyRequireSelfie" type="checkbox" /> Requerir selfie/evidencia</label>
+            <button class="primary" type="submit">Guardar politicas</button>
+          </form>
+        </article>
+        <article class="panel">
+          <h2>Sucursales y geocercas</h2>
+          <form id="branchForm" class="branch-form">
+            <input id="branchName" placeholder="Sucursal" required />
+            <input id="branchLat" type="number" step="0.000001" placeholder="Lat" required />
+            <input id="branchLng" type="number" step="0.000001" placeholder="Lng" required />
+            <button class="primary" type="submit">Agregar</button>
+          </form>
+          <div id="branchList" class="stack"></div>
+        </article>
+      </section>
+
+      <section id="integraciones" class="layout">
+        <article class="panel">
+          <h2>WhatsApp Cloud API</h2>
+          <div id="integrationStatus" class="stack"></div>
+          <div class="code-box">POST /webhooks/whatsapp -> validar firma -> normalizar mensaje -> crear registro -> responder plantilla</div>
+        </article>
+        <article class="panel">
+          <h2>Nomina y API</h2>
+          <div class="stack">
+            <div class="row-card"><div><strong>CSV de nomina</strong><span>Listo para Excel, CONTPAQi, Nomipaq u otro sistema.</span></div><span class="pill ok">Activo</span></div>
+            <div class="row-card"><div><strong>API REST</strong><span>Preparado para backend: empleados, registros, incidencias y auditoria.</span></div><span class="pill warn">Pendiente</span></div>
+          </div>
+        </article>
+      </section>
+
+      <section id="auditoria" class="panel">
+        <h2>Auditoria</h2>
+        <div id="auditList" class="stack"></div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
