@@ -1,0 +1,5 @@
+checador.db
+checador.db-*
+media/
+.env
+__pycache__/
