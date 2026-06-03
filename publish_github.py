@@ -109,6 +109,18 @@ def upload_file(owner, repo, path):
     print(f"uploaded {rel}")
 
 
+def enable_pages(owner, repo):
+    payload = {"source": {"branch": "main", "path": "/"}}
+    try:
+        request_json("GET", f"https://api.github.com/repos/{owner}/{repo}/pages")
+        request_json("PUT", f"https://api.github.com/repos/{owner}/{repo}/pages", payload)
+    except RuntimeError as exc:
+        if "404" not in str(exc):
+            raise
+        request_json("POST", f"https://api.github.com/repos/{owner}/{repo}/pages", payload)
+    print("github pages enabled")
+
+
 def main():
     if not TOKEN:
         print("Falta GITHUB_TOKEN o GH_TOKEN con permiso repo.", file=sys.stderr)
@@ -119,6 +131,10 @@ def main():
     for path in sorted(ROOT.rglob("*")):
         if should_upload(path):
             upload_file(owner, name, path)
+    try:
+        enable_pages(owner, name)
+    except RuntimeError as exc:
+        print(f"warning: no se pudo activar GitHub Pages automaticamente: {exc}", file=sys.stderr)
     print(repo["html_url"])
     return 0
 
