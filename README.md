@@ -6,6 +6,10 @@ Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se mues
 
 ## Modulos incluidos
 
+- Vista ejecutiva para presentacion comercial en GitHub Pages.
+- Login visual con resumen de valor y simulacion de conversacion WhatsApp.
+- Panel de salud operativa con barras de cobertura, evidencia, nomina y riesgo.
+- Mapa visual de checadas por sucursal y estado.
 - Login simulado con roles: Dueno, RRHH, Supervisor y Empleado.
 - Multiempresa preparado y selector de sucursal.
 - Empleados con alta, edicion, baja logica, telefono, area, rol, modalidad, turno y saldo de vacaciones.
