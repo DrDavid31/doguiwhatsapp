@@ -8,29 +8,48 @@
   </head>
   <body>
     <section id="loginScreen" class="login-screen">
-      <form id="loginForm" class="login-box">
-        <span class="brand-mark">W</span>
-        <h1>Checador WA</h1>
-        <p>Acceso de administradores, RRHH y supervisores.</p>
-        <label>
-          Usuario
-          <input id="loginUser" value="admin@empresa.mx" required />
-        </label>
-        <label>
-          Contrasena
-          <input id="loginPassword" type="password" value="admin123" required />
-        </label>
-        <label>
-          Rol
-          <select id="loginRole">
-            <option value="Dueno">Dueno</option>
-            <option value="RRHH">RRHH</option>
-            <option value="Supervisor">Supervisor</option>
-            <option value="Empleado">Empleado</option>
-          </select>
-        </label>
-        <button class="primary" type="submit">Entrar</button>
-      </form>
+      <div class="login-stage">
+        <div class="login-preview">
+          <span class="status">Demo ejecutiva</span>
+          <h1>Checador WA</h1>
+          <p>Asistencia, geocercas, evidencias, incidencias y nomina en un tablero conectado a WhatsApp.</p>
+          <div class="preview-grid">
+            <div><strong>98%</strong><span>checadas validadas</span></div>
+            <div><strong>24/7</strong><span>webhook activo</span></div>
+            <div><strong>3 min</strong><span>cierre diario</span></div>
+          </div>
+          <div class="phone-demo">
+            <div class="phone-head"></div>
+            <div class="phone-bubble">entrar</div>
+            <div class="phone-bubble reply">Entrada registrada. GPS y evidencia correctos.</div>
+            <div class="phone-bubble">vacaciones 10/06 al 12/06</div>
+            <div class="phone-bubble reply">Solicitud enviada a RRHH.</div>
+          </div>
+        </div>
+        <form id="loginForm" class="login-box">
+          <span class="brand-mark">W</span>
+          <h1>Acceso</h1>
+          <p>Usa los datos precargados para presentar la demo.</p>
+          <label>
+            Usuario
+            <input id="loginUser" value="admin@empresa.mx" required />
+          </label>
+          <label>
+            Contrasena
+            <input id="loginPassword" type="password" value="admin123" required />
+          </label>
+          <label>
+            Rol
+            <select id="loginRole">
+              <option value="Dueno">Dueno</option>
+              <option value="RRHH">RRHH</option>
+              <option value="Supervisor">Supervisor</option>
+              <option value="Empleado">Empleado</option>
+            </select>
+          </label>
+          <button class="primary" type="submit">Entrar a la demo</button>
+        </form>
+      </div>
     </section>
 
     <aside class="sidebar">
@@ -67,12 +86,62 @@
         </div>
       </header>
 
+      <section class="demo-banner">
+        <div>
+          <strong>Presentacion lista para GitHub Pages</strong>
+          <span>Modo demo con datos precargados, visuales ejecutivos y flujo completo de RRHH.</span>
+        </div>
+        <div>
+          <strong>Backend real disponible</strong>
+          <span>Al correrlo en local activa SQLite, sesiones, webhook y WhatsApp Cloud API.</span>
+        </div>
+        <div>
+          <strong>Operacion empresarial</strong>
+          <span>Geocercas, evidencias, incidencias, reportes y exportacion de nomina.</span>
+        </div>
+      </section>
+
       <section id="tablero" class="grid metrics">
         <article><span>En turno</span><strong id="metricWorking">0</strong></article>
         <article><span>Retardos hoy</span><strong id="metricLate">0</strong></article>
         <article><span>Horas extra</span><strong id="metricOvertime">0.0</strong></article>
         <article><span>Incidencias abiertas</span><strong id="metricOpenIssues">0</strong></article>
         <article><span>Alertas activas</span><strong id="metricAlerts">0</strong></article>
+      </section>
+
+      <section class="executive-grid">
+        <article class="panel health-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Salud operativa</h2>
+              <p>Indicadores rapidos para direccion y RRHH.</p>
+            </div>
+          </div>
+          <div id="healthInsights" class="insights"></div>
+        </article>
+        <article class="panel map-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Mapa de checadas</h2>
+              <p>Visualiza sucursales, ubicaciones y registros fuera de geocerca.</p>
+            </div>
+          </div>
+          <div id="geoMap" class="geo-map"></div>
+        </article>
+        <article class="panel flow-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Flujo operativo</h2>
+              <p>De mensaje WhatsApp a registro listo para nomina.</p>
+            </div>
+          </div>
+          <div class="flow-steps">
+            <div><strong>1</strong><span>Mensaje</span></div>
+            <div><strong>2</strong><span>Validacion</span></div>
+            <div><strong>3</strong><span>Incidencia</span></div>
+            <div><strong>4</strong><span>Nomina</span></div>
+          </div>
+        </article>
       </section>
 
       <section class="layout">
