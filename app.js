@@ -660,6 +660,61 @@ function renderSummary() {
   byId("metricAlerts").textContent = state.alerts.filter((alert) => alert.status === "Abierta").length;
 }
 
+function renderExecutiveInsights() {
+  const employees = activeEmployees();
+  const todayRecords = state.records.filter((record) => new Date(record.timestamp).toDateString() === new Date().toDateString());
+  const entries = todayRecords.filter((record) => record.event === "entrada").length;
+  const late = todayRecords.filter((record) => record.status === "Retardo").length;
+  const evidence = todayRecords.filter((record) => record.evidence).length;
+  const openIssues = state.issues.filter((issue) => issue.status === "Pendiente").length;
+  const openAlerts = state.alerts.filter((alert) => alert.status === "Abierta").length;
+  const attendanceRate = employees.length ? Math.min(100, Math.round((entries / employees.length) * 100)) : 0;
+  const evidenceRate = todayRecords.length ? Math.round((evidence / todayRecords.length) * 100) : 0;
+  const riskScore = Math.min(100, openAlerts * 18 + openIssues * 12 + late * 10);
+  const payrollReady = Math.max(0, Math.min(100, 100 - riskScore + evidenceRate * 0.15));
+  const rows = [
+    ["Cobertura de asistencia", attendanceRate, "ok"],
+    ["Evidencia verificada", evidenceRate, "ok"],
+    ["Nomina lista", Math.round(payrollReady), payrollReady > 80 ? "ok" : "warn"],
+    ["Riesgo operativo", riskScore, riskScore > 45 ? "danger" : "warn"]
+  ];
+
+  byId("healthInsights").innerHTML = rows.map(([label, value, kind]) => `
+    <div class="insight-row">
+      <div>
+        <strong>${label}</strong>
+        <span>${value}%</span>
+      </div>
+      <div class="bar"><i class="${kind}" style="width:${value}%"></i></div>
+    </div>
+  `).join("");
+}
+
+function renderGeoMap() {
+  const branch = branchById(state.selectedBranchId);
+  const visibleRecords = state.records
+    .filter((record) => record.branchId === state.selectedBranchId)
+    .filter((record) => record.lat || record.lng)
+    .slice(0, 5);
+  const pins = visibleRecords.map((record, index) => {
+    const left = Math.max(12, Math.min(88, 50 + ((record.lng || branch.lng) - branch.lng) * 900 + index * 5));
+    const top = Math.max(16, Math.min(82, 50 - ((record.lat || branch.lat) - branch.lat) * 900 + index * 4));
+    const kind = record.status === "Retardo" || record.suspicious ? "warn" : "ok";
+    return `<button class="map-pin ${kind}" style="left:${left}%;top:${top}%" title="${record.employeeName} - ${record.status}"></button>`;
+  }).join("");
+
+  byId("geoMap").innerHTML = `
+    <div class="map-grid"></div>
+    <div class="map-radius"></div>
+    <div class="map-branch"><strong>${branch.name}</strong><span>${branch.lat.toFixed(4)}, ${branch.lng.toFixed(4)}</span></div>
+    ${pins || `<button class="map-pin ok" style="left:52%;top:48%" title="Sucursal base"></button>`}
+    <div class="map-legend">
+      <span><i class="ok"></i> A tiempo</span>
+      <span><i class="warn"></i> Revision</span>
+    </div>
+  `;
+}
+
 function renderCalendar() {
   const date = new Date(`${state.report.from}T12:00:00`);
   const days = Array.from({ length: 30 }, (_, index) => {
@@ -719,6 +774,8 @@ function render() {
   renderWorkingNow();
   renderAlerts();
   renderSummary();
+  renderExecutiveInsights();
+  renderGeoMap();
   renderCalendar();
   renderPolicy();
   renderBranches();
