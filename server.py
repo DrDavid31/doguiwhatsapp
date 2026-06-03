@@ -80,6 +80,16 @@ DEFAULT_STATE = {
     "alerts": [],
     "audit": [],
     "chat": [],
+    "securityTickets": [],
+    "securityAlerts": [],
+    "phishingTemplates": [
+        {"id": "tpl-factura", "name": "Factura proveedor", "category": "proveedor", "channel": "Correo", "risk": "Alta"},
+        {"id": "tpl-banco", "name": "Validacion bancaria", "category": "banco", "channel": "SMS", "risk": "Alta"},
+        {"id": "tpl-rh", "name": "Actualizacion RH", "category": "RH", "channel": "WhatsApp", "risk": "Media"},
+        {"id": "tpl-paqueteria", "name": "Paqueteria retenida", "category": "paqueteria", "channel": "SMS", "risk": "Media"},
+        {"id": "tpl-sat", "name": "Aviso SAT", "category": "SAT", "channel": "Correo", "risk": "Alta"},
+    ],
+    "phishingCampaigns": [],
     "report": {"from": datetime.now().date().isoformat(), "to": datetime.now().date().isoformat(), "area": "Todas"},
 }
 
@@ -460,6 +470,10 @@ def import_state(con, state, replace=False):
 
     con.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('selected_company_id', ?)", (company_id,))
     con.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('selected_branch_id', ?)", (state.get("selectedBranchId", "br-centro"),))
+    con.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('security_tickets', ?)", (json.dumps(state.get("securityTickets", []), ensure_ascii=False),))
+    con.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('security_alerts', ?)", (json.dumps(state.get("securityAlerts", []), ensure_ascii=False),))
+    con.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('phishing_templates', ?)", (json.dumps(state.get("phishingTemplates", DEFAULT_STATE["phishingTemplates"]), ensure_ascii=False),))
+    con.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('phishing_campaigns', ?)", (json.dumps(state.get("phishingCampaigns", []), ensure_ascii=False),))
 
 
 def lookup_employee_id(con, employee_name):
@@ -599,6 +613,10 @@ def build_state(con):
         "alerts": alerts,
         "audit": audit,
         "chat": chat,
+        "securityTickets": row_json(get_meta(con, "security_tickets", "[]"), []),
+        "securityAlerts": row_json(get_meta(con, "security_alerts", "[]"), []),
+        "phishingTemplates": row_json(get_meta(con, "phishing_templates", json.dumps(DEFAULT_STATE["phishingTemplates"])), DEFAULT_STATE["phishingTemplates"]),
+        "phishingCampaigns": row_json(get_meta(con, "phishing_campaigns", "[]"), []),
         "report": report,
     }
 
