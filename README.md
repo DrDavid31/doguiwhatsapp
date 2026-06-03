@@ -10,6 +10,11 @@ Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se mues
 - Login visual con resumen de valor y simulacion de conversacion WhatsApp.
 - Panel de salud operativa con barras de cobertura, evidencia, nomina y riesgo.
 - Mapa visual de checadas por sucursal y estado.
+- DOGUI WhatsApp Security Assistant para reportar links sospechosos, correos falsos, archivos raros e intentos de fraude.
+- Creacion automatica de tickets, alertas internas y respuestas tipo "No abras el archivo".
+- DOGUI Phishing Simulator con campanas por correo, WhatsApp y SMS.
+- Plantillas de fraude: factura, banco, proveedor, RH, paqueteria y SAT.
+- Metricas de clics, reportes, capacitacion, score por departamento y reporte mensual.
 - Login simulado con roles: Dueno, RRHH, Supervisor y Empleado.
 - Multiempresa preparado y selector de sucursal.
 - Empleados con alta, edicion, baja logica, telefono, area, rol, modalidad, turno y saldo de vacaciones.
