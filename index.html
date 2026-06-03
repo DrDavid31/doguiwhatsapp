@@ -11,19 +11,19 @@
       <div class="login-stage">
         <div class="login-preview">
           <span class="status">Demo ejecutiva</span>
-          <h1>Checador WA</h1>
-          <p>Asistencia, geocercas, evidencias, incidencias y nomina en un tablero conectado a WhatsApp.</p>
+          <h1>DOGUI WA</h1>
+          <p>Asistencia, seguridad, phishing awareness, evidencias, tickets e incidencias en un tablero conectado a WhatsApp.</p>
           <div class="preview-grid">
-            <div><strong>98%</strong><span>checadas validadas</span></div>
+            <div><strong>98%</strong><span>eventos validados</span></div>
             <div><strong>24/7</strong><span>webhook activo</span></div>
-            <div><strong>3 min</strong><span>cierre diario</span></div>
+            <div><strong>3 min</strong><span>ticket automatico</span></div>
           </div>
           <div class="phone-demo">
             <div class="phone-head"></div>
             <div class="phone-bubble">entrar</div>
             <div class="phone-bubble reply">Entrada registrada. GPS y evidencia correctos.</div>
-            <div class="phone-bubble">vacaciones 10/06 al 12/06</div>
-            <div class="phone-bubble reply">Solicitud enviada a RRHH.</div>
+            <div class="phone-bubble">link sospechoso factura-proveedor.mx</div>
+            <div class="phone-bubble reply">No abras el enlace. Ticket creado para revision.</div>
           </div>
         </div>
         <form id="loginForm" class="login-box">
@@ -64,6 +64,8 @@
         <a href="#tablero" class="active">Tablero</a>
         <a href="#whatsapp">WhatsApp</a>
         <a href="#empleados">Empleados</a>
+        <a href="#seguridad">Security Assistant</a>
+        <a href="#phishing">Phishing Simulator</a>
         <a href="#incidencias">Incidencias</a>
         <a href="#reportes">Reportes</a>
         <a href="#configuracion">Configuracion</a>
@@ -88,16 +90,16 @@
 
       <section class="demo-banner">
         <div>
-          <strong>Presentacion lista para GitHub Pages</strong>
-          <span>Modo demo con datos precargados, visuales ejecutivos y flujo completo de RRHH.</span>
+          <strong>Suite DOGUI lista para GitHub Pages</strong>
+          <span>Modo demo con asistencia, seguridad, phishing y metricas ejecutivas.</span>
         </div>
         <div>
           <strong>Backend real disponible</strong>
           <span>Al correrlo en local activa SQLite, sesiones, webhook y WhatsApp Cloud API.</span>
         </div>
         <div>
-          <strong>Operacion empresarial</strong>
-          <span>Geocercas, evidencias, incidencias, reportes y exportacion de nomina.</span>
+          <strong>Operacion y ciberseguridad</strong>
+          <span>Geocercas, tickets, alertas internas, simulaciones, reportes y nomina.</span>
         </div>
       </section>
 
@@ -142,6 +144,102 @@
             <div><strong>4</strong><span>Nomina</span></div>
           </div>
         </article>
+      </section>
+
+      <section id="seguridad" class="product-suite security-suite">
+        <div class="suite-head">
+          <div>
+            <p class="eyebrow">Producto estrella 1</p>
+            <h2>DOGUI WhatsApp Security Assistant</h2>
+            <p>Convierte WhatsApp en el canal oficial para reportar links, correos, archivos y fraudes.</p>
+          </div>
+          <span class="status">SOC por WhatsApp</span>
+        </div>
+        <div class="suite-grid">
+          <article class="panel">
+            <h3>Nuevo reporte</h3>
+            <form id="securityReportForm" class="form">
+              <label>Empleado<select id="securityEmployee"></select></label>
+              <label>Tipo de incidente
+                <select id="securityType">
+                  <option value="Link sospechoso">Link sospechoso</option>
+                  <option value="Correo falso">Correo falso</option>
+                  <option value="Archivo raro">Archivo raro</option>
+                  <option value="Intento de fraude">Intento de fraude</option>
+                  <option value="Check-in de seguridad">Check-in de seguridad</option>
+                </select>
+              </label>
+              <label>Detalle<input id="securityDetail" placeholder="Ej. me llego factura-proveedor.mx/descarga" required /></label>
+              <label>Severidad
+                <select id="securitySeverity">
+                  <option>Alta</option>
+                  <option>Media</option>
+                  <option>Baja</option>
+                </select>
+              </label>
+              <button class="primary" type="submit">Crear ticket</button>
+            </form>
+            <div id="securityAutoResponse" class="response-card"></div>
+          </article>
+          <article class="panel wide-panel">
+            <div class="panel-head">
+              <div>
+                <h3>Tickets automaticos</h3>
+                <p>Reportes entrantes, respuesta inmediata y estado de revision.</p>
+              </div>
+            </div>
+            <div id="securityTickets" class="ticket-board"></div>
+          </article>
+          <article class="panel">
+            <h3>Alertas internas</h3>
+            <div id="securityAlerts" class="stack"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="phishing" class="product-suite phishing-suite">
+        <div class="suite-head">
+          <div>
+            <p class="eyebrow">Producto estrella 2</p>
+            <h2>DOGUI Phishing Simulator</h2>
+            <p>Campanas por correo, WhatsApp o SMS con metricas, capacitacion y score mensual.</p>
+          </div>
+          <span class="status">Metricas vivas</span>
+        </div>
+        <div class="suite-grid phishing-grid">
+          <article class="panel">
+            <h3>Lanzar campana</h3>
+            <form id="phishingCampaignForm" class="form">
+              <label>Nombre<input id="campaignName" value="Factura proveedor junio" required /></label>
+              <label>Canal
+                <select id="campaignChannel">
+                  <option>Correo</option>
+                  <option>WhatsApp</option>
+                  <option>SMS</option>
+                </select>
+              </label>
+              <label>Plantilla<select id="campaignTemplate"></select></label>
+              <label>Departamento<select id="campaignDepartment"></select></label>
+              <button class="primary" type="submit">Simular campana</button>
+            </form>
+          </article>
+          <article class="panel">
+            <h3>Metricas de campana</h3>
+            <div id="phishingMetrics" class="metric-bars"></div>
+          </article>
+          <article class="panel wide-panel">
+            <h3>Plantillas de fraude</h3>
+            <div id="phishingTemplates" class="template-grid"></div>
+          </article>
+          <article class="panel">
+            <h3>Score por departamento</h3>
+            <div id="departmentScores" class="score-list"></div>
+          </article>
+          <article class="panel wide-panel">
+            <h3>Reporte mensual</h3>
+            <div id="monthlySecurityReport" class="monthly-report"></div>
+          </article>
+        </div>
       </section>
 
       <section class="layout">
