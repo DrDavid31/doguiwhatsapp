@@ -834,6 +834,229 @@ body[data-mode="demo"] .status::after {
   font-weight: 800;
 }
 
+.product-suite {
+  margin-bottom: 18px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 249, 0.86)),
+    #fff;
+  box-shadow: var(--shadow);
+}
+
+.security-suite {
+  border-color: rgba(18, 140, 126, 0.25);
+}
+
+.phishing-suite {
+  border-color: rgba(232, 111, 81, 0.28);
+}
+
+.suite-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.suite-head h2 {
+  margin-top: 4px;
+  font-size: clamp(1.7rem, 3vw, 2.4rem);
+}
+
+.suite-head p:last-child {
+  max-width: 760px;
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.suite-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(420px, 1.35fr) minmax(280px, 0.9fr);
+  gap: 18px;
+}
+
+.phishing-grid {
+  grid-template-columns: minmax(260px, 0.85fr) minmax(280px, 0.9fr) minmax(440px, 1.4fr);
+}
+
+.wide-panel {
+  min-width: 0;
+}
+
+.panel h3 {
+  margin: 0 0 14px;
+  font-size: 1.05rem;
+}
+
+.response-card {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid #bfe7dc;
+  border-radius: 8px;
+  background: #edf9f5;
+}
+
+.response-card strong,
+.response-card span {
+  display: block;
+}
+
+.response-card span {
+  color: var(--brand-dark);
+  font-size: 0.9rem;
+}
+
+.ticket-board {
+  display: grid;
+  gap: 10px;
+}
+
+.ticket-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--brand);
+  border-radius: 8px;
+  background: #fbfcfb;
+}
+
+.ticket-card.critical {
+  border-left-color: var(--danger);
+  background: #fffafa;
+}
+
+.ticket-card span,
+.ticket-card strong,
+.ticket-card small,
+.ticket-card p {
+  display: block;
+}
+
+.ticket-card > div:first-child > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.ticket-card p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ticket-card small {
+  margin-top: 6px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.metric-bars,
+.score-list {
+  display: grid;
+  gap: 14px;
+}
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.template-card {
+  display: grid;
+  gap: 8px;
+  min-height: 110px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(232, 111, 81, 0.08), transparent),
+    #fbfcfb;
+}
+
+.template-card span {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fff1ed;
+  color: var(--coral);
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.template-card small {
+  color: var(--muted);
+}
+
+.score-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.score-row .bar {
+  grid-column: 1 / -1;
+}
+
+.score-row span {
+  color: var(--brand-dark);
+  font-weight: 900;
+}
+
+.monthly-report {
+  display: grid;
+}
+
+.report-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(18, 140, 126, 0.1), rgba(245, 184, 65, 0.11)),
+    #fbfcfb;
+  border: 1px solid var(--line);
+}
+
+.report-card > span {
+  color: var(--muted);
+}
+
+.report-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.report-stats div {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.report-stats strong,
+.report-stats span {
+  display: block;
+}
+
+.report-stats strong {
+  font-size: 1.45rem;
+}
+
+.report-stats span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 @media (max-width: 1180px) {
   .grid.metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -844,9 +1067,15 @@ body[data-mode="demo"] .status::after {
   .branch-form,
   .top-actions,
   .executive-grid,
-  .demo-banner {
+  .demo-banner,
+  .suite-grid,
+  .phishing-grid {
     grid-template-columns: 1fr 1fr;
     grid-auto-flow: row;
+  }
+
+  .wide-panel {
+    grid-column: 1 / -1;
   }
 }
 
@@ -879,6 +1108,11 @@ body[data-mode="demo"] .status::after {
   .executive-grid,
   .demo-banner,
   .employee-form,
+  .suite-head,
+  .suite-grid,
+  .phishing-grid,
+  .template-grid,
+  .report-stats,
   .topbar,
   .form-grid,
   .report-filters,
