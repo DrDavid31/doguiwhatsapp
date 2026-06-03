@@ -36,6 +36,16 @@ const seed = {
   alerts: [],
   audit: [],
   chat: [],
+  securityTickets: [],
+  securityAlerts: [],
+  phishingTemplates: [
+    { id: "tpl-factura", name: "Factura proveedor", category: "proveedor", channel: "Correo", risk: "Alta" },
+    { id: "tpl-banco", name: "Validacion bancaria", category: "banco", channel: "SMS", risk: "Alta" },
+    { id: "tpl-rh", name: "Actualizacion RH", category: "RH", channel: "WhatsApp", risk: "Media" },
+    { id: "tpl-paqueteria", name: "Paqueteria retenida", category: "paqueteria", channel: "SMS", risk: "Media" },
+    { id: "tpl-sat", name: "Aviso SAT", category: "SAT", channel: "Correo", risk: "Alta" }
+  ],
+  phishingCampaigns: [],
   report: { from: todayIso(), to: todayIso(), area: "Todas" }
 };
 
@@ -65,6 +75,10 @@ function migrateState(raw) {
   merged.audit = raw.audit || [];
   merged.issues = raw.issues || [];
   merged.chat = raw.chat || [];
+  merged.securityTickets = raw.securityTickets || seed.securityTickets;
+  merged.securityAlerts = raw.securityAlerts || seed.securityAlerts;
+  merged.phishingTemplates = raw.phishingTemplates || seed.phishingTemplates;
+  merged.phishingCampaigns = raw.phishingCampaigns || seed.phishingCampaigns;
   merged.records = (raw.records || []).map((record) => ({ branchId: merged.selectedBranchId, evidence: false, suspicious: false, ...record }));
   merged.employees = (raw.employees || seed.employees).map((employee) => ({
     area: "General",
@@ -97,112 +111,219 @@ function demoTimestamp(hoursAgo) {
 }
 
 function seedPresentationData() {
-  if (state.records.length || !state.employees.length) return;
+  if (!state.employees.length) return;
   const first = state.employees[0];
   const second = state.employees[1] || first;
   const third = state.employees[2] || first;
   const branch = state.branches[0];
-  state.records = [
-    {
-      id: makeId(),
-      employeeId: first.id,
-      employeeName: first.name,
-      branchId: first.branchId,
-      event: "entrada",
-      message: "entrar",
-      location: "Sucursal Centro",
-      lat: branch.lat,
-      lng: branch.lng,
-      distance: 18,
-      evidence: true,
-      suspicious: false,
-      flags: [],
-      status: "A tiempo",
-      timestamp: demoTimestamp(5)
-    },
-    {
-      id: makeId(),
-      employeeId: second.id,
-      employeeName: second.name,
-      branchId: second.branchId,
-      event: "entrada",
-      message: "entrar",
-      location: "Planta Norte",
-      lat: 19.4938,
-      lng: -99.1462,
-      distance: 42,
-      evidence: true,
-      suspicious: false,
-      flags: [],
-      status: "Retardo",
-      timestamp: demoTimestamp(4)
-    },
-    {
-      id: makeId(),
-      employeeId: third.id,
-      employeeName: third.name,
-      branchId: third.branchId,
-      event: "permiso",
-      message: "permiso medico",
-      location: "WhatsApp",
-      evidence: true,
-      suspicious: false,
-      flags: [],
-      status: "Incidencia",
-      timestamp: demoTimestamp(2)
-    }
-  ];
-  state.issues = [
-    {
-      id: makeId(),
-      employeeId: third.id,
-      employeeName: third.name,
-      type: "permiso",
-      detail: "permiso medico con evidencia por WhatsApp",
-      evidence: true,
-      status: "Pendiente",
-      timestamp: demoTimestamp(2)
-    }
-  ];
-  state.alerts = [
-    {
-      id: makeId(),
-      key: `demo-alert-${second.id}`,
-      employeeName: second.name,
-      type: "Retardo",
-      detail: "Entrada registrada fuera de tolerancia.",
-      severity: "warn",
-      status: "Abierta",
-      timestamp: demoTimestamp(4)
-    }
-  ];
-  state.chat = [
-    {
-      id: makeId(),
-      employeeName: first.name,
-      message: "entrar",
-      response: `${first.name}, registramos tu entrada con estado: A tiempo.`,
-      timestamp: demoTimestamp(5)
-    },
-    {
-      id: makeId(),
-      employeeName: third.name,
-      message: "permiso medico",
-      response: `${third.name}, registramos tu permiso con estado: Incidencia.`,
-      timestamp: demoTimestamp(2)
-    }
-  ];
-  state.audit = [
-    {
-      id: makeId(),
-      action: "Demo GitHub Pages",
-      detail: "Datos de presentacion cargados automaticamente",
-      user: "Sistema",
-      role: "Demo",
-      timestamp: demoTimestamp(6)
-    }
-  ];
+  if (!state.records.length) {
+    state.records = [
+      {
+        id: makeId(),
+        employeeId: first.id,
+        employeeName: first.name,
+        branchId: first.branchId,
+        event: "entrada",
+        message: "entrar",
+        location: "Sucursal Centro",
+        lat: branch.lat,
+        lng: branch.lng,
+        distance: 18,
+        evidence: true,
+        suspicious: false,
+        flags: [],
+        status: "A tiempo",
+        timestamp: demoTimestamp(5)
+      },
+      {
+        id: makeId(),
+        employeeId: second.id,
+        employeeName: second.name,
+        branchId: second.branchId,
+        event: "entrada",
+        message: "entrar",
+        location: "Planta Norte",
+        lat: 19.4938,
+        lng: -99.1462,
+        distance: 42,
+        evidence: true,
+        suspicious: false,
+        flags: [],
+        status: "Retardo",
+        timestamp: demoTimestamp(4)
+      },
+      {
+        id: makeId(),
+        employeeId: third.id,
+        employeeName: third.name,
+        branchId: third.branchId,
+        event: "permiso",
+        message: "permiso medico",
+        location: "WhatsApp",
+        evidence: true,
+        suspicious: false,
+        flags: [],
+        status: "Incidencia",
+        timestamp: demoTimestamp(2)
+      }
+    ];
+  }
+  if (!state.issues.length) {
+    state.issues = [
+      {
+        id: makeId(),
+        employeeId: third.id,
+        employeeName: third.name,
+        type: "permiso",
+        detail: "permiso medico con evidencia por WhatsApp",
+        evidence: true,
+        status: "Pendiente",
+        timestamp: demoTimestamp(2)
+      }
+    ];
+  }
+  if (!state.alerts.length) {
+    state.alerts = [
+      {
+        id: makeId(),
+        key: `demo-alert-${second.id}`,
+        employeeName: second.name,
+        type: "Retardo",
+        detail: "Entrada registrada fuera de tolerancia.",
+        severity: "warn",
+        status: "Abierta",
+        timestamp: demoTimestamp(4)
+      }
+    ];
+  }
+  if (!state.chat.length) {
+    state.chat = [
+      {
+        id: makeId(),
+        employeeName: first.name,
+        message: "entrar",
+        response: `${first.name}, registramos tu entrada con estado: A tiempo.`,
+        timestamp: demoTimestamp(5)
+      },
+      {
+        id: makeId(),
+        employeeName: third.name,
+        message: "permiso medico",
+        response: `${third.name}, registramos tu permiso con estado: Incidencia.`,
+        timestamp: demoTimestamp(2)
+      }
+    ];
+  }
+  if (!state.securityTickets?.length) {
+    state.securityTickets = [
+      securityTicketSeed(first, "Link sospechoso", "Recibi enlace factura-proveedor.mx/descarga por WhatsApp", "Alta", demoTimestamp(1)),
+      securityTicketSeed(second, "Correo falso", "Correo de banco pide actualizar token y contrasena", "Alta", demoTimestamp(3)),
+      securityTicketSeed(third, "Archivo raro", "Adjunto .zip enviado por supuesto proveedor nuevo", "Media", demoTimestamp(7))
+    ];
+  }
+  if (!state.securityAlerts?.length) {
+    state.securityAlerts = [
+      { id: makeId(), title: "Bloquear dominio", detail: "factura-proveedor.mx aparece en 2 reportes.", severity: "Alta", status: "Activa", timestamp: demoTimestamp(1) },
+      { id: makeId(), title: "Aviso interno", detail: "Enviar alerta de no abrir adjuntos ZIP de proveedores no verificados.", severity: "Media", status: "Activa", timestamp: demoTimestamp(2) }
+    ];
+  }
+  if (!state.phishingCampaigns?.length) {
+    state.phishingCampaigns = [
+      phishingCampaignSeed("Factura proveedor junio", "Correo", "Factura proveedor", "Operaciones", 34, 11, 19, 28, demoTimestamp(24)),
+      phishingCampaignSeed("Aviso SAT urgente", "WhatsApp", "Aviso SAT", "Administracion", 18, 7, 8, 14, demoTimestamp(72)),
+      phishingCampaignSeed("Paqueteria retenida", "SMS", "Paqueteria retenida", "Ventas", 21, 6, 11, 18, demoTimestamp(120))
+    ];
+  }
+  if (!state.audit.length) {
+    state.audit = [
+      {
+        id: makeId(),
+        action: "Demo GitHub Pages",
+        detail: "Datos de presentacion cargados automaticamente",
+        user: "Sistema",
+        role: "Demo",
+        timestamp: demoTimestamp(6)
+      }
+    ];
+  }
   saveState();
+}
+
+function securityResponseFor(type) {
+  const responses = {
+    "Link sospechoso": "No abras el enlace. El equipo de seguridad lo revisara y bloqueara el dominio si aplica.",
+    "Correo falso": "No respondas el correo ni descargues adjuntos. Reenvia evidencia y espera confirmacion de DOGUI.",
+    "Archivo raro": "No abras el archivo. Aisla el mensaje y espera revision del equipo de seguridad.",
+    "Intento de fraude": "Deten cualquier pago o transferencia. Seguridad y finanzas revisaran el intento.",
+    "Check-in de seguridad": "Check-in recibido. Si estas en una situacion activa, comparte ubicacion y evidencia."
+  };
+  return responses[type] || "Reporte recibido. Espera revision antes de realizar cualquier accion.";
+}
+
+function securityTicketSeed(employee, type, detail, severity, timestamp = now().toISOString()) {
+  return {
+    id: makeId(),
+    number: `DG-${Math.floor(1000 + Math.random() * 9000)}`,
+    employeeId: employee.id,
+    employeeName: employee.name,
+    department: employee.area,
+    type,
+    detail,
+    severity,
+    status: severity === "Alta" ? "Prioridad SOC" : "En revision",
+    response: securityResponseFor(type),
+    timestamp
+  };
+}
+
+function phishingCampaignSeed(name, channel, template, department, sent, clicked, reported, trained, timestamp = now().toISOString()) {
+  return { id: makeId(), name, channel, template, department, sent, clicked, reported, trained, timestamp };
+}
+
+function createSecurityTicket(event) {
+  event.preventDefault();
+  const employee = employeeById(byId("securityEmployee").value) || activeEmployees()[0];
+  const type = byId("securityType").value;
+  const ticket = securityTicketSeed(employee, type, byId("securityDetail").value, byId("securitySeverity").value);
+  state.securityTickets.unshift(ticket);
+  state.securityAlerts.unshift({
+    id: makeId(),
+    title: `${ticket.severity}: ${ticket.type}`,
+    detail: `${ticket.employeeName} reporto: ${ticket.detail}`,
+    severity: ticket.severity,
+    status: "Activa",
+    timestamp: ticket.timestamp
+  });
+  state.chat.unshift({
+    id: makeId(),
+    employeeName: ticket.employeeName,
+    message: ticket.detail,
+    response: ticket.response,
+    timestamp: ticket.timestamp
+  });
+  addAudit("Ticket de seguridad creado", `${ticket.number} - ${ticket.type}`);
+  byId("securityAutoResponse").innerHTML = `<strong>Respuesta automatica</strong><span>${ticket.response}</span>`;
+  byId("securityDetail").value = "";
+  saveState();
+  render();
+}
+
+function launchPhishingCampaign(event) {
+  event.preventDefault();
+  const department = byId("campaignDepartment").value;
+  const employees = activeEmployees().filter((employee) => department === "Todos" || employee.area === department);
+  const sent = Math.max(8, employees.length * 12);
+  const template = byId("campaignTemplate").value;
+  const riskBoost = template.toLowerCase().includes("sat") || template.toLowerCase().includes("banco") ? 0.34 : 0.24;
+  const clicked = Math.max(1, Math.round(sent * riskBoost));
+  const reported = Math.max(1, Math.round(sent * 0.42));
+  const trained = Math.max(reported, Math.round(sent * 0.78));
+  state.phishingCampaigns.unshift(
+    phishingCampaignSeed(byId("campaignName").value, byId("campaignChannel").value, template, department, sent, clicked, reported, trained)
+  );
+  addAudit("Campana phishing simulada", `${byId("campaignName").value} - ${department}`);
+  saveState();
+  render();
 }
 
 async function hydrateFromBackend() {
@@ -537,9 +658,13 @@ function renderSelectors() {
   byId("employeeBranch").innerHTML = branchOptions;
   byId("employeeBranch").value = state.selectedBranchId;
   byId("employeeSelect").innerHTML = activeEmployees().map((employee) => `<option value="${employee.id}">${employee.name} - ${employee.phone}</option>`).join("");
+  byId("securityEmployee").innerHTML = activeEmployees().map((employee) => `<option value="${employee.id}">${employee.name} - ${employee.area}</option>`).join("");
   const areas = ["Todas", ...new Set(state.employees.filter((employee) => employee.active).map((employee) => employee.area))];
   byId("reportArea").innerHTML = areas.map((area) => `<option>${area}</option>`).join("");
   byId("reportArea").value = state.report.area;
+  const departments = ["Todos", ...new Set(state.employees.filter((employee) => employee.active).map((employee) => employee.area))];
+  byId("campaignDepartment").innerHTML = departments.map((area) => `<option>${area}</option>`).join("");
+  byId("campaignTemplate").innerHTML = state.phishingTemplates.map((template) => `<option>${template.name}</option>`).join("");
 }
 
 function renderEmployees() {
@@ -751,6 +876,93 @@ function renderIntegrations() {
   `;
 }
 
+function renderSecurityAssistant() {
+  const tickets = state.securityTickets || [];
+  const openTickets = tickets.filter((ticket) => ticket.status !== "Cerrado").length;
+  const highTickets = tickets.filter((ticket) => ticket.severity === "Alta").length;
+  const responseRate = tickets.length ? Math.round((tickets.filter((ticket) => ticket.response).length / tickets.length) * 100) : 0;
+  byId("securityAutoResponse").innerHTML = `
+    <strong>${openTickets} tickets activos</strong>
+    <span>${highTickets} de prioridad alta. ${responseRate}% con respuesta automatica lista.</span>
+  `;
+  byId("securityTickets").innerHTML = tickets.slice(0, 8).map((ticket) => `
+    <div class="ticket-card ${ticket.severity === "Alta" ? "critical" : ""}">
+      <div>
+        <span>${ticket.number}</span>
+        <strong>${ticket.type}</strong>
+        <p>${ticket.detail}</p>
+      </div>
+      <div>
+        <span class="pill ${ticket.severity === "Alta" ? "danger" : "warn"}">${ticket.severity}</span>
+        <small>${ticket.employeeName} - ${ticket.department}</small>
+        <small>${ticket.status}</small>
+      </div>
+    </div>
+  `).join("");
+  byId("securityAlerts").innerHTML = (state.securityAlerts || []).slice(0, 6).map((alert) => `
+    <div class="row-card">
+      <div><strong>${alert.title}</strong><span>${alert.detail}</span></div>
+      <span class="pill ${alert.severity === "Alta" ? "danger" : "warn"}">${alert.status}</span>
+    </div>
+  `).join("");
+}
+
+function renderPhishingSimulator() {
+  const campaigns = state.phishingCampaigns || [];
+  const total = campaigns.reduce((acc, item) => {
+    acc.sent += item.sent;
+    acc.clicked += item.clicked;
+    acc.reported += item.reported;
+    acc.trained += item.trained;
+    return acc;
+  }, { sent: 0, clicked: 0, reported: 0, trained: 0 });
+  const clickRate = total.sent ? Math.round((total.clicked / total.sent) * 100) : 0;
+  const reportRate = total.sent ? Math.round((total.reported / total.sent) * 100) : 0;
+  const trainingRate = total.sent ? Math.round((total.trained / total.sent) * 100) : 0;
+  const resilience = Math.max(0, Math.min(100, 100 - clickRate + reportRate));
+  const metrics = [
+    ["Clics", clickRate, "danger"],
+    ["Reportes", reportRate, "ok"],
+    ["Capacitacion", trainingRate, "ok"],
+    ["Resiliencia", resilience, "ok"]
+  ];
+  byId("phishingMetrics").innerHTML = metrics.map(([label, value, kind]) => `
+    <div class="insight-row">
+      <div><strong>${label}</strong><span>${value}%</span></div>
+      <div class="bar"><i class="${kind}" style="width:${value}%"></i></div>
+    </div>
+  `).join("");
+  byId("phishingTemplates").innerHTML = state.phishingTemplates.map((template) => `
+    <div class="template-card">
+      <span>${template.channel}</span>
+      <strong>${template.name}</strong>
+      <small>${template.category} - Riesgo ${template.risk}</small>
+    </div>
+  `).join("");
+  const departments = [...new Set(activeEmployees().map((employee) => employee.area))];
+  byId("departmentScores").innerHTML = departments.map((department) => {
+    const deptCampaigns = campaigns.filter((campaign) => campaign.department === department || campaign.department === "Todos");
+    const sent = deptCampaigns.reduce((sum, campaign) => sum + campaign.sent, 0);
+    const clicked = deptCampaigns.reduce((sum, campaign) => sum + campaign.clicked, 0);
+    const reported = deptCampaigns.reduce((sum, campaign) => sum + campaign.reported, 0);
+    const score = sent ? Math.max(0, Math.min(100, 100 - Math.round((clicked / sent) * 100) + Math.round((reported / sent) * 35))) : 86;
+    return `<div class="score-row"><strong>${department}</strong><span>${score}</span><div class="bar"><i class="${score > 80 ? "ok" : "warn"}" style="width:${score}%"></i></div></div>`;
+  }).join("");
+  const latest = campaigns[0];
+  byId("monthlySecurityReport").innerHTML = latest ? `
+    <div class="report-card">
+      <strong>${latest.name}</strong>
+      <span>${latest.channel} - ${latest.template} - ${latest.department}</span>
+      <div class="report-stats">
+        <div><strong>${latest.sent}</strong><span>enviados</span></div>
+        <div><strong>${latest.clicked}</strong><span>clics</span></div>
+        <div><strong>${latest.reported}</strong><span>reportes</span></div>
+        <div><strong>${latest.trained}</strong><span>capacitados</span></div>
+      </div>
+    </div>
+  ` : `<p>Sin campanas simuladas.</p>`;
+}
+
 function renderAudit() {
   byId("auditList").innerHTML = state.audit.slice(0, 30).map((item) => `
     <div class="row-card"><div><strong>${item.action}</strong><span>${item.detail} - ${item.user} (${item.role})</span></div><span>${formatDate(item.timestamp)} ${formatTime(item.timestamp)}</span></div>
@@ -780,6 +992,8 @@ function render() {
   renderPolicy();
   renderBranches();
   renderIntegrations();
+  renderSecurityAssistant();
+  renderPhishingSimulator();
   renderAudit();
 }
 
@@ -857,6 +1071,8 @@ document.querySelectorAll(".quick-actions button").forEach((button) => {
 });
 
 byId("employeeForm").addEventListener("submit", saveEmployee);
+byId("securityReportForm").addEventListener("submit", createSecurityTicket);
+byId("phishingCampaignForm").addEventListener("submit", launchPhishingCampaign);
 byId("cancelEditEmployee").addEventListener("click", () => {
   byId("employeeForm").reset();
   resetEmployeeForm();
