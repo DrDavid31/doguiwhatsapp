@@ -81,15 +81,26 @@ admin123
 - `POST /api/login`: login con contrasena y cookie de sesion.
 - `POST /api/logout`: cierre de sesion.
 - `GET /api/me`: usuario actual.
+- `GET /api/health`: estado de base de datos, WhatsApp, SendGrid, Twilio y URL publica.
 - `GET /api/employees` y `POST /api/employees`: empleados.
 - `DELETE /api/employees/:id`: baja logica.
 - `GET /api/records`: registros.
 - `GET /api/issues`: incidencias.
 - `POST /api/issues/:id/status`: aprobar/rechazar.
 - `GET /api/media`: evidencias recibidas por WhatsApp.
+- `GET/POST /api/security/tickets`: tickets reales del Security Assistant.
+- `POST /api/security/tickets/:id/status`: cambio de estado de tickets.
+- `GET /api/security/alerts`: alertas internas de ciberseguridad.
+- `GET /api/phishing/templates`: plantillas de phishing.
+- `GET/POST /api/phishing/campaigns`: campanas de phishing.
+- `POST /api/phishing/campaigns/:id/launch`: lanzamiento y medicion inicial.
+- `GET /api/phishing/reports/monthly`: reporte mensual agregado.
+- `GET /t/:campaignId/:targetId`: tracking de clics.
+- `GET /r/:campaignId/:targetId`: tracking de reportes.
+- `GET /training/:campaignId/:targetId`: capacitacion y cierre.
 - `GET /api/state` y `PUT /api/state`: estado consolidado para el panel.
 
-La base ya no depende de un solo JSON: `server.py` crea tablas normalizadas para empresas, sucursales, politicas, usuarios, sesiones, empleados, registros, incidencias, alertas, auditoria, chat, webhooks y media.
+La base ya no depende de un solo JSON: `server.py` crea tablas normalizadas para empresas, sucursales, politicas, usuarios, sesiones, empleados, registros, incidencias, alertas, auditoria, chat, webhooks, media, tickets de seguridad, evidencia, plantillas, campanas, targets, eventos de phishing y capacitaciones.
 
 ## WhatsApp Cloud API real
 
@@ -101,11 +112,15 @@ GET/POST /webhooks/whatsapp
 
 Variables de entorno:
 
+- `PUBLIC_BASE_URL`: dominio HTTPS publico usado para ligas de tracking de phishing.
+- `CORS_ORIGIN`: opcional, origen permitido si el frontend de GitHub Pages consume un backend externo.
 - `WHATSAPP_VERIFY_TOKEN`: token que capturas en Meta para verificar el webhook.
 - `WHATSAPP_TOKEN`: token de acceso de WhatsApp Cloud API.
 - `WHATSAPP_PHONE_NUMBER_ID`: ID del numero de WhatsApp en Meta.
 - `META_APP_SECRET`: opcional, valida la firma `X-Hub-Signature-256`.
 - `GRAPH_API_VERSION`: version de Graph API usada para mensajes/media.
+- `SENDGRID_API_KEY` y `EMAIL_FROM`: envio de campanas por correo.
+- `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` y `TWILIO_FROM`: envio de campanas por SMS.
 
 Para exponerlo a Meta necesitas un dominio HTTPS o un tunel como ngrok/cloudflared apuntando a `http://127.0.0.1:8080`.
 
@@ -129,13 +144,39 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/simulate-whatsapp 
 
 El webhook soporta mensajes de texto, ubicacion, imagen, documento, video y audio. Los mensajes duplicados por `wa_message_id` se ignoran para evitar dobles checadas. Si `WHATSAPP_TOKEN` esta configurado, las evidencias multimedia se descargan en la carpeta `media`.
 
+Si el mensaje contiene terminos como `link sospechoso`, `correo falso`, `archivo raro`, `fraude`, `SAT`, `banco`, `proveedor`, o llega como documento sospechoso, DOGUI crea automaticamente un ticket en `security_tickets`, genera una alerta interna y responde por WhatsApp con una instruccion segura.
+
+## Security Assistant y Phishing Simulator reales
+
+El panel funciona en dos modos:
+
+- GitHub Pages: demo visual con datos en `localStorage`.
+- Backend local/publico: SQLite, sesiones, webhook, tickets, campanas y tracking real.
+
+Para que GitHub Pages apunte a un backend publicado, configura en la consola del navegador o en un script previo:
+
+```js
+localStorage.setItem("dogui-api-base", "https://tu-dominio.com");
+```
+
+Tambien puedes declarar `window.DOGUI_API_BASE = "https://tu-dominio.com"` antes de cargar `app.js`.
+
+El simulador puede enviar por:
+
+- WhatsApp Cloud API si `WHATSAPP_TOKEN` y `WHATSAPP_PHONE_NUMBER_ID` existen.
+- SMS con Twilio si `TWILIO_*` existe.
+- Correo con SendGrid si `SENDGRID_API_KEY` existe y los targets tienen email.
+
+Si un proveedor no esta configurado, la campana corre en modo simulado: marca objetivos como enviados, crea URLs de tracking y conserva las metricas para presentacion.
+
 ## Que faltaria para produccion completa
 
-- Autenticacion real con contrasenas, sesiones y permisos.
-- Integracion con plantillas de WhatsApp aprobadas por Meta.
-- Carga real de fotos/evidencias y documentos de incapacidad.
-- Control legal de consentimiento y aviso de privacidad.
-- Integracion directa con sistema de nomina.
+- Hospedar `server.py` detras de HTTPS con dominio propio.
+- Configurar plantillas de WhatsApp aprobadas por Meta para mensajes proactivos.
+- Agregar email real al catalogo de empleados para campanas por correo.
+- Definir permisos finos por rol y bitacoras legales.
+- Agregar aviso de privacidad, consentimiento y politicas internas.
+- Integracion directa con sistema de nomina/SIEM/ticketing externo.
 
 ## Modelo de backend recomendado
 
