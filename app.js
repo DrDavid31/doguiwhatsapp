@@ -875,11 +875,11 @@ function renderExecutiveInsights() {
   const attendanceRate = employees.length ? Math.min(100, Math.round((entries / employees.length) * 100)) : 0;
   const evidenceRate = todayRecords.length ? Math.round((evidence / todayRecords.length) * 100) : 0;
   const riskScore = Math.min(100, openAlerts * 18 + openIssues * 12 + late * 10);
-  const payrollReady = Math.max(0, Math.min(100, 100 - riskScore + evidenceRate * 0.15));
+  const operationalReadiness = Math.max(0, Math.min(100, 100 - riskScore + evidenceRate * 0.15));
   const rows = [
     ["Cobertura de asistencia", attendanceRate, "ok"],
     ["Evidencia verificada", evidenceRate, "ok"],
-    ["Nomina lista", Math.round(payrollReady), payrollReady > 80 ? "ok" : "warn"],
+    ["Operacion al dia", Math.round(operationalReadiness), operationalReadiness > 80 ? "ok" : "warn"],
     ["Riesgo operativo", riskScore, riskScore > 45 ? "danger" : "warn"]
   ];
 
@@ -1098,7 +1098,7 @@ function downloadCsv() {
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `nomina-checador-wa-${state.report.from}-${state.report.to}.csv`;
+  link.download = `reporte-asistencia-dogui-${state.report.from}-${state.report.to}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
 }
