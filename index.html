@@ -83,7 +83,7 @@
         <div class="top-actions">
           <select id="companySelect"></select>
           <select id="branchSelect"></select>
-          <button id="exportCsv" class="primary">Exportar nomina</button>
+          <button id="exportCsv" class="primary">Exportar reporte</button>
           <button id="logoutButton">Salir</button>
         </div>
       </header>
@@ -99,7 +99,7 @@
         </div>
         <div>
           <strong>Operacion y ciberseguridad</strong>
-          <span>Geocercas, tickets, alertas internas, simulaciones, reportes y nomina.</span>
+          <span>Geocercas, tickets, alertas internas, simulaciones y reportes operativos.</span>
         </div>
       </section>
 
@@ -134,14 +134,14 @@
           <div class="panel-head">
             <div>
               <h2>Flujo operativo</h2>
-              <p>De mensaje WhatsApp a registro listo para nomina.</p>
+              <p>De mensaje WhatsApp a registro validado y auditable.</p>
             </div>
           </div>
           <div class="flow-steps">
             <div><strong>1</strong><span>Mensaje</span></div>
             <div><strong>2</strong><span>Validacion</span></div>
             <div><strong>3</strong><span>Incidencia</span></div>
-            <div><strong>4</strong><span>Nomina</span></div>
+            <div><strong>4</strong><span>Auditoria</span></div>
           </div>
         </article>
       </section>
@@ -344,7 +344,7 @@
 
       <section id="incidencias" class="layout">
         <article class="panel">
-          <h2>Incidencias de nomina</h2>
+          <h2>Incidencias operativas</h2>
           <div id="issuesList" class="stack"></div>
         </article>
         <article class="panel">
@@ -358,7 +358,7 @@
           <div class="panel-head">
             <div>
               <h2>Reportes por periodo</h2>
-              <p>Filtra por fechas, sucursal, area y genera resumen para nomina.</p>
+              <p>Filtra por fechas, sucursal y area para revisar asistencia e incidencias.</p>
             </div>
           </div>
           <form id="reportFilters" class="report-filters">
@@ -414,9 +414,9 @@
           <div class="code-box">POST /webhooks/whatsapp -> validar firma -> clasificar asistencia/incidente -> crear registro/ticket -> responder por WhatsApp</div>
         </article>
         <article class="panel">
-          <h2>Nomina y API</h2>
+          <h2>Operacion y API</h2>
           <div class="stack">
-            <div class="row-card"><div><strong>CSV de nomina</strong><span>Listo para Excel, CONTPAQi, Nomipaq u otro sistema.</span></div><span class="pill ok">Activo</span></div>
+            <div class="row-card"><div><strong>CSV de asistencia</strong><span>Exporta registros para revision interna, auditoria y seguimiento operativo.</span></div><span class="pill ok">Activo</span></div>
             <div class="row-card"><div><strong>API REST</strong><span>Backend para empleados, asistencia, tickets, phishing, tracking y auditoria.</span></div><span class="pill ok">Activo</span></div>
           </div>
         </article>
