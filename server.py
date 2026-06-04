@@ -26,6 +26,13 @@ META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 SESSION_DAYS = int(os.getenv("SESSION_DAYS", "7"))
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+CORS_ORIGIN = os.getenv("CORS_ORIGIN", "")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "seguridad@dogui.mx")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM = os.getenv("TWILIO_FROM", "")
 
 
 DEFAULT_POLICY = {
@@ -271,6 +278,108 @@ def init_db():
               local_path TEXT,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS security_tickets (
+              id TEXT PRIMARY KEY,
+              company_id TEXT NOT NULL REFERENCES companies(id),
+              employee_id TEXT REFERENCES employees(id),
+              number TEXT NOT NULL UNIQUE,
+              type TEXT NOT NULL,
+              detail TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              status TEXT NOT NULL,
+              response TEXT NOT NULL,
+              source_channel TEXT NOT NULL DEFAULT 'Panel',
+              wa_message_id TEXT REFERENCES whatsapp_events(wa_message_id),
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              closed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS security_alerts (
+              id TEXT PRIMARY KEY,
+              ticket_id TEXT REFERENCES security_tickets(id),
+              title TEXT NOT NULL,
+              detail TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              status TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS security_evidence (
+              id TEXT PRIMARY KEY,
+              ticket_id TEXT NOT NULL REFERENCES security_tickets(id),
+              media_id TEXT,
+              kind TEXT NOT NULL,
+              mime_type TEXT,
+              filename TEXT,
+              local_path TEXT,
+              sha256 TEXT,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS phishing_templates (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              category TEXT NOT NULL,
+              channel TEXT NOT NULL,
+              risk TEXT NOT NULL,
+              subject TEXT,
+              body TEXT,
+              landing_url TEXT,
+              active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS phishing_campaigns (
+              id TEXT PRIMARY KEY,
+              company_id TEXT NOT NULL REFERENCES companies(id),
+              name TEXT NOT NULL,
+              channel TEXT NOT NULL,
+              template_id TEXT REFERENCES phishing_templates(id),
+              template_name TEXT NOT NULL,
+              department TEXT NOT NULL,
+              status TEXT NOT NULL,
+              sent INTEGER NOT NULL DEFAULT 0,
+              clicked INTEGER NOT NULL DEFAULT 0,
+              reported INTEGER NOT NULL DEFAULT 0,
+              trained INTEGER NOT NULL DEFAULT 0,
+              score INTEGER NOT NULL DEFAULT 100,
+              created_at TEXT NOT NULL,
+              launched_at TEXT,
+              monthly_report_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS phishing_targets (
+              id TEXT PRIMARY KEY,
+              campaign_id TEXT NOT NULL REFERENCES phishing_campaigns(id),
+              employee_id TEXT NOT NULL REFERENCES employees(id),
+              employee_name TEXT NOT NULL,
+              department TEXT NOT NULL,
+              phone TEXT NOT NULL,
+              email TEXT,
+              status TEXT NOT NULL,
+              click_token TEXT NOT NULL UNIQUE,
+              report_token TEXT NOT NULL UNIQUE,
+              training_token TEXT NOT NULL UNIQUE,
+              sent_at TEXT,
+              clicked_at TEXT,
+              reported_at TEXT,
+              trained_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS phishing_events (
+              id TEXT PRIMARY KEY,
+              campaign_id TEXT NOT NULL REFERENCES phishing_campaigns(id),
+              target_id TEXT REFERENCES phishing_targets(id),
+              employee_id TEXT REFERENCES employees(id),
+              event TEXT NOT NULL,
+              channel TEXT NOT NULL,
+              metadata_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS training_assignments (
+              id TEXT PRIMARY KEY,
+              employee_id TEXT NOT NULL REFERENCES employees(id),
+              campaign_id TEXT NOT NULL REFERENCES phishing_campaigns(id),
+              status TEXT NOT NULL,
+              due_at TEXT NOT NULL,
+              completed_at TEXT,
+              created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS app_meta (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
@@ -279,6 +388,8 @@ def init_db():
         )
         ensure_webhook_event_columns(con)
         migrate_legacy_state(con)
+        seed_phishing_templates(con)
+        migrate_product_meta(con)
         seed_auth(con)
 
 
@@ -310,6 +421,160 @@ def migrate_legacy_state(con):
     else:
         source = DEFAULT_STATE
     import_state(con, source, replace=True)
+
+
+def phishing_template_content(template):
+    name = template.get("name", "Simulacion DOGUI")
+    channel = template.get("channel", "Correo")
+    subject = {
+        "Factura proveedor": "Factura pendiente de validacion",
+        "Validacion bancaria": "Validacion urgente de cuenta",
+        "Actualizacion RH": "Actualizacion de expediente RH",
+        "Paqueteria retenida": "Paquete retenido por datos incompletos",
+        "Aviso SAT": "Aviso de obligaciones fiscales",
+    }.get(name, f"{name} - DOGUI")
+    body = (
+        "Hola {employee_name}, esta es una simulacion controlada de DOGUI. "
+        "Si recibes un mensaje real con urgencia, adjuntos o links inesperados, reportalo por WhatsApp. "
+        "Liga de prueba: {click_url}. Reportar: {report_url}."
+    )
+    if channel == "SMS":
+        body = "DOGUI simulacion: revisa {click_url}. Si lo detectas, reporta aqui {report_url}."
+    if channel == "WhatsApp":
+        body = "DOGUI simulacion de seguridad. Revisa esta liga de prueba: {click_url}. Para reportarla usa {report_url}."
+    return subject, body
+
+
+def seed_phishing_templates(con):
+    if con.execute("SELECT COUNT(*) FROM phishing_templates").fetchone()[0]:
+        return
+    for template in DEFAULT_STATE["phishingTemplates"]:
+        subject, body = phishing_template_content(template)
+        con.execute(
+            """
+            INSERT INTO phishing_templates
+            (id, name, category, channel, risk, subject, body, landing_url, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (
+                template["id"],
+                template["name"],
+                template.get("category", "general"),
+                template.get("channel", "Correo"),
+                template.get("risk", "Media"),
+                subject,
+                body,
+                "/t/{campaign_id}/{target_id}",
+                utc_now(),
+            ),
+        )
+
+
+def migrate_product_meta(con):
+    if not con.execute("SELECT COUNT(*) FROM security_tickets").fetchone()[0]:
+        for ticket in row_json(get_meta(con, "security_tickets", "[]"), []):
+            employee_id = ticket.get("employeeId") or lookup_employee_id(con, ticket.get("employeeName"))
+            company_id = get_meta(con, "selected_company_id", "co-demo")
+            created_at = ticket.get("timestamp", utc_now())
+            con.execute(
+                """
+                INSERT OR IGNORE INTO security_tickets
+                (id, company_id, employee_id, number, type, detail, severity, status, response, source_channel, wa_message_id, created_at, updated_at, closed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticket.get("id", make_id("sec")),
+                    company_id,
+                    employee_id,
+                    ticket.get("number") or next_ticket_number(con),
+                    ticket.get("type", "Reporte"),
+                    ticket.get("detail", ""),
+                    ticket.get("severity", "Media"),
+                    ticket.get("status", "En revision"),
+                    ticket.get("response") or security_response_for(ticket.get("type", "Reporte")),
+                    ticket.get("sourceChannel", "Demo"),
+                    ticket.get("waMessageId"),
+                    created_at,
+                    ticket.get("updatedAt", created_at),
+                    ticket.get("closedAt"),
+                ),
+            )
+
+    if not con.execute("SELECT COUNT(*) FROM security_alerts").fetchone()[0]:
+        for alert in row_json(get_meta(con, "security_alerts", "[]"), []):
+            con.execute(
+                """
+                INSERT OR IGNORE INTO security_alerts
+                (id, ticket_id, title, detail, severity, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    alert.get("id", make_id("secalert")),
+                    alert.get("ticketId"),
+                    alert.get("title", "Alerta de seguridad"),
+                    alert.get("detail", ""),
+                    alert.get("severity", "Media"),
+                    alert.get("status", "Activa"),
+                    alert.get("timestamp", utc_now()),
+                ),
+            )
+
+    for template in row_json(get_meta(con, "phishing_templates", "[]"), []):
+        subject, body = phishing_template_content(template)
+        con.execute(
+            """
+            INSERT OR IGNORE INTO phishing_templates
+            (id, name, category, channel, risk, subject, body, landing_url, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (
+                template.get("id", make_id("tpl")),
+                template.get("name", "Plantilla DOGUI"),
+                template.get("category", "general"),
+                template.get("channel", "Correo"),
+                template.get("risk", "Media"),
+                template.get("subject", subject),
+                template.get("body", body),
+                template.get("landingUrl", "/t/{campaign_id}/{target_id}"),
+                utc_now(),
+            ),
+        )
+
+    if not con.execute("SELECT COUNT(*) FROM phishing_campaigns").fetchone()[0]:
+        for campaign in row_json(get_meta(con, "phishing_campaigns", "[]"), []):
+            template_name = campaign.get("template", "Plantilla DOGUI")
+            template = con.execute("SELECT id FROM phishing_templates WHERE name = ? LIMIT 1", (template_name,)).fetchone()
+            sent = int(campaign.get("sent", 0))
+            clicked = int(campaign.get("clicked", 0))
+            reported = int(campaign.get("reported", 0))
+            trained = int(campaign.get("trained", 0))
+            score = calculate_resilience_score(sent, clicked, reported)
+            created_at = campaign.get("timestamp", utc_now())
+            con.execute(
+                """
+                INSERT OR IGNORE INTO phishing_campaigns
+                (id, company_id, name, channel, template_id, template_name, department, status, sent, clicked, reported, trained, score, created_at, launched_at, monthly_report_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    campaign.get("id", make_id("camp")),
+                    get_meta(con, "selected_company_id", "co-demo"),
+                    campaign.get("name", "Campana DOGUI"),
+                    campaign.get("channel", "Correo"),
+                    template["id"] if template else None,
+                    template_name,
+                    campaign.get("department", "Todos"),
+                    campaign.get("status", "Simulada"),
+                    sent,
+                    clicked,
+                    reported,
+                    trained,
+                    score,
+                    created_at,
+                    campaign.get("launchedAt", created_at),
+                    json.dumps(campaign.get("monthlyReport", {}), ensure_ascii=False),
+                ),
+            )
 
 
 def seed_auth(con):
@@ -488,6 +753,216 @@ def get_meta(con, key, default):
     return row["value"] if row else default
 
 
+def security_response_for(incident_type):
+    responses = {
+        "Link sospechoso": "No abras el enlace. DOGUI creo un ticket y seguridad revisara el dominio antes de autorizar cualquier accion.",
+        "Correo falso": "No respondas el correo ni descargues adjuntos. Reenvia evidencia y espera confirmacion de seguridad.",
+        "Archivo raro": "No abras el archivo. Aisla el mensaje y espera revision del equipo de seguridad.",
+        "Intento de fraude": "Deten cualquier pago o transferencia. Seguridad y finanzas revisaran el intento.",
+        "Check-in de seguridad": "Check-in recibido. Si estas en una situacion activa, comparte ubicacion y evidencia.",
+    }
+    return responses.get(incident_type, "Reporte recibido. Espera revision antes de realizar cualquier accion.")
+
+
+def classify_security_report(message, message_type="text", media=None):
+    text = (message or "").lower()
+    if any(term in text for term in ["check-in seguridad", "checkin seguridad", "seguridad ok", "sos seguridad"]):
+        return "Check-in de seguridad", "Media"
+    if any(term in text for term in ["fraude", "estafa", "suplantacion", "transferencia", "deposito", "pago urgente", "ceo fraud"]):
+        return "Intento de fraude", "Alta"
+    if message_type == "document" or media:
+        filename = (media or {}).get("filename", "").lower()
+        if any(ext in filename for ext in [".zip", ".rar", ".exe", ".scr", ".bat", ".js", ".docm", ".xlsm"]) or any(term in text for term in ["archivo raro", "adjunto raro", "zip", "rar", "exe"]):
+            return "Archivo raro", "Alta" if any(ext in filename for ext in [".exe", ".scr", ".bat", ".js"]) else "Media"
+    if any(term in text for term in ["link sospechoso", "liga sospechosa", "http://", "https://", "bit.ly", "tinyurl", "enlace", "link"]):
+        return "Link sospechoso", "Alta"
+    if any(term in text for term in ["correo falso", "email falso", "mail falso", "banco", "sat", "factura", "proveedor", "contrasena", "password", "token"]):
+        return "Correo falso", "Alta"
+    return None, None
+
+
+def next_ticket_number(con):
+    count = con.execute("SELECT COUNT(*) FROM security_tickets").fetchone()[0] + 1
+    return f"DG-{count:04d}"
+
+
+def create_security_ticket(con, employee, incident_type, detail, severity="Media", source_channel="Panel", wa_message_id=None, media=None):
+    now_value = utc_now()
+    ticket_id = make_id("sec")
+    response = security_response_for(incident_type)
+    status = "Prioridad SOC" if severity == "Alta" else "En revision"
+    con.execute(
+        """
+        INSERT INTO security_tickets
+        (id, company_id, employee_id, number, type, detail, severity, status, response, source_channel, wa_message_id, created_at, updated_at, closed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            ticket_id,
+            employee["company_id"],
+            employee["id"],
+            next_ticket_number(con),
+            incident_type,
+            detail,
+            severity,
+            status,
+            response,
+            source_channel,
+            wa_message_id,
+            now_value,
+            now_value,
+        ),
+    )
+    alert_id = make_id("secalert")
+    con.execute(
+        """
+        INSERT INTO security_alerts (id, ticket_id, title, detail, severity, status, created_at)
+        VALUES (?, ?, ?, ?, ?, 'Activa', ?)
+        """,
+        (
+            alert_id,
+            ticket_id,
+            f"{severity}: {incident_type}",
+            f"{employee['name']} reporto: {detail}",
+            severity,
+            now_value,
+        ),
+    )
+    if media:
+        con.execute(
+            """
+            INSERT INTO security_evidence
+            (id, ticket_id, media_id, kind, mime_type, filename, local_path, sha256, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                make_id("secev"),
+                ticket_id,
+                media.get("id"),
+                media.get("type", "media"),
+                media.get("mime_type"),
+                media.get("filename"),
+                media.get("local_path"),
+                media.get("sha256"),
+                now_value,
+            ),
+        )
+    create_chat(con, employee, detail, response)
+    add_audit(con, "Ticket de seguridad creado", f"{incident_type} - {employee['name']}")
+    return get_security_ticket(con, ticket_id), get_security_alert(con, alert_id)
+
+
+def get_security_ticket(con, ticket_id):
+    row = con.execute(
+        """
+        SELECT st.*, e.name AS employee_name, e.area AS department
+        FROM security_tickets st
+        LEFT JOIN employees e ON e.id = st.employee_id
+        WHERE st.id = ?
+        """,
+        (ticket_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "number": row["number"],
+        "employeeId": row["employee_id"],
+        "employeeName": row["employee_name"] or "Sistema",
+        "department": row["department"] or "General",
+        "type": row["type"],
+        "detail": row["detail"],
+        "severity": row["severity"],
+        "status": row["status"],
+        "response": row["response"],
+        "sourceChannel": row["source_channel"],
+        "waMessageId": row["wa_message_id"],
+        "timestamp": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "closedAt": row["closed_at"],
+    }
+
+
+def list_security_tickets(con):
+    rows = con.execute(
+        """
+        SELECT st.id
+        FROM security_tickets st
+        ORDER BY st.created_at DESC
+        LIMIT 300
+        """
+    )
+    return [get_security_ticket(con, row["id"]) for row in rows]
+
+
+def get_security_alert(con, alert_id):
+    row = con.execute("SELECT * FROM security_alerts WHERE id = ?", (alert_id,)).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "ticketId": row["ticket_id"],
+        "title": row["title"],
+        "detail": row["detail"],
+        "severity": row["severity"],
+        "status": row["status"],
+        "timestamp": row["created_at"],
+    }
+
+
+def list_security_alerts(con):
+    rows = con.execute("SELECT id FROM security_alerts ORDER BY created_at DESC LIMIT 200")
+    return [get_security_alert(con, row["id"]) for row in rows]
+
+
+def list_phishing_templates(con):
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "category": row["category"],
+            "channel": row["channel"],
+            "risk": row["risk"],
+            "subject": row["subject"],
+            "body": row["body"],
+            "landingUrl": row["landing_url"],
+            "active": bool(row["active"]),
+        }
+        for row in con.execute("SELECT * FROM phishing_templates WHERE active = 1 ORDER BY name")
+    ]
+
+
+def calculate_resilience_score(sent, clicked, reported):
+    if not sent:
+        return 100
+    click_rate = round((clicked / sent) * 100)
+    report_rate = round((reported / sent) * 35)
+    return max(0, min(100, 100 - click_rate + report_rate))
+
+
+def list_phishing_campaigns(con):
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "channel": row["channel"],
+            "templateId": row["template_id"],
+            "template": row["template_name"],
+            "department": row["department"],
+            "status": row["status"],
+            "sent": row["sent"],
+            "clicked": row["clicked"],
+            "reported": row["reported"],
+            "trained": row["trained"],
+            "score": row["score"],
+            "timestamp": row["created_at"],
+            "launchedAt": row["launched_at"],
+            "monthlyReport": row_json(row["monthly_report_json"], {}),
+        }
+        for row in con.execute("SELECT * FROM phishing_campaigns ORDER BY created_at DESC LIMIT 200")
+    ]
+
+
 def build_state(con):
     selected_company_id = get_meta(con, "selected_company_id", "co-demo")
     selected_branch_id = get_meta(con, "selected_branch_id", "br-centro")
@@ -613,10 +1088,10 @@ def build_state(con):
         "alerts": alerts,
         "audit": audit,
         "chat": chat,
-        "securityTickets": row_json(get_meta(con, "security_tickets", "[]"), []),
-        "securityAlerts": row_json(get_meta(con, "security_alerts", "[]"), []),
-        "phishingTemplates": row_json(get_meta(con, "phishing_templates", json.dumps(DEFAULT_STATE["phishingTemplates"])), DEFAULT_STATE["phishingTemplates"]),
-        "phishingCampaigns": row_json(get_meta(con, "phishing_campaigns", "[]"), []),
+        "securityTickets": list_security_tickets(con),
+        "securityAlerts": list_security_alerts(con),
+        "phishingTemplates": list_phishing_templates(con),
+        "phishingCampaigns": list_phishing_campaigns(con),
         "report": report,
     }
 
@@ -750,6 +1225,25 @@ def process_business_message(sender_phone, message_text, raw_message, message_ty
         if media:
             store_media_attachment(con, wa_id, employee["id"], media)
 
+        security_type, security_severity = classify_security_report(message_text, message_type, media)
+        if event == "mensaje" and security_type:
+            detail = message_text or (media or {}).get("filename") or f"Reporte recibido por {message_type}"
+            ticket, _ = create_security_ticket(
+                con,
+                employee,
+                security_type,
+                detail,
+                security_severity,
+                source_channel="WhatsApp",
+                wa_message_id=wa_id,
+                media=media,
+            )
+            response = f"{ticket['number']} creado. {ticket['response']}"
+            add_audit(con, "Webhook Security Assistant", f"{employee['name']}: {security_type}", "Meta", "Sistema")
+            con.execute("UPDATE whatsapp_events SET status = 'security_ticket' WHERE wa_message_id = ?", (wa_id,))
+            send_whatsapp_text(sender_phone, response)
+            return {"status": "security_ticket", "ticket": ticket, "response": response, "waMessageId": wa_id}
+
         status = "Registrado"
         flags = []
         location_text = "WhatsApp Cloud API"
@@ -786,6 +1280,7 @@ def store_media_attachment(con, wa_id, employee_id, media):
     media_id = media.get("id")
     if media_id and WHATSAPP_TOKEN:
         local_path = download_whatsapp_media(media_id, media.get("mime_type"))
+    media["local_path"] = local_path
     con.execute(
         """
         INSERT OR REPLACE INTO media_attachments
@@ -806,6 +1301,7 @@ def store_media_attachment(con, wa_id, employee_id, media):
             utc_now(),
         ),
     )
+    return local_path
 
 
 def download_whatsapp_media(media_id, mime_type=None):
@@ -850,6 +1346,309 @@ def send_whatsapp_text(to_phone, body):
             return {"sent": True, "status": res.status, "body": res.read().decode("utf-8")}
     except urllib.error.URLError as exc:
         return {"sent": False, "reason": str(exc)}
+
+
+def public_base_url(headers=None):
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL
+    host = (headers or {}).get("Host", f"127.0.0.1:{PORT}")
+    scheme = "https" if (headers or {}).get("X-Forwarded-Proto") == "https" else "http"
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def create_phishing_campaign(con, payload, company_id):
+    template_value = payload.get("templateId") or payload.get("template") or payload.get("templateName")
+    template = con.execute(
+        """
+        SELECT * FROM phishing_templates
+        WHERE id = ? OR name = ?
+        ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
+        LIMIT 1
+        """,
+        (template_value, template_value, template_value),
+    ).fetchone()
+    if not template:
+        template = con.execute("SELECT * FROM phishing_templates ORDER BY name LIMIT 1").fetchone()
+    department = payload.get("department", "Todos")
+    campaign_id = make_id("camp")
+    created_at = utc_now()
+    con.execute(
+        """
+        INSERT INTO phishing_campaigns
+        (id, company_id, name, channel, template_id, template_name, department, status, sent, clicked, reported, trained, score, created_at, launched_at, monthly_report_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'Borrador', 0, 0, 0, 0, 100, ?, NULL, '{}')
+        """,
+        (
+            campaign_id,
+            company_id,
+            payload.get("name", f"Campana {created_at[:10]}"),
+            payload.get("channel") or template["channel"],
+            template["id"],
+            template["name"],
+            department,
+            created_at,
+        ),
+    )
+    target_emails = payload.get("targetEmails", {}) or {}
+    employees = con.execute(
+        """
+        SELECT * FROM employees
+        WHERE active = 1 AND company_id = ? AND (? = 'Todos' OR area = ?)
+        ORDER BY name
+        """,
+        (company_id, department, department),
+    ).fetchall()
+    for employee in employees:
+        con.execute(
+            """
+            INSERT INTO phishing_targets
+            (id, campaign_id, employee_id, employee_name, department, phone, email, status, click_token, report_token, training_token, sent_at, clicked_at, reported_at, trained_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?, ?, ?, NULL, NULL, NULL, NULL)
+            """,
+            (
+                make_id("target"),
+                campaign_id,
+                employee["id"],
+                employee["name"],
+                employee["area"],
+                employee["phone"],
+                target_emails.get(employee["id"]),
+                secrets.token_urlsafe(14),
+                secrets.token_urlsafe(14),
+                secrets.token_urlsafe(14),
+            ),
+        )
+    add_audit(con, "Campana phishing creada", payload.get("name", campaign_id))
+    return get_phishing_campaign(con, campaign_id)
+
+
+def get_phishing_campaign(con, campaign_id):
+    row = con.execute("SELECT * FROM phishing_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "channel": row["channel"],
+        "templateId": row["template_id"],
+        "template": row["template_name"],
+        "department": row["department"],
+        "status": row["status"],
+        "sent": row["sent"],
+        "clicked": row["clicked"],
+        "reported": row["reported"],
+        "trained": row["trained"],
+        "score": row["score"],
+        "timestamp": row["created_at"],
+        "launchedAt": row["launched_at"],
+        "monthlyReport": row_json(row["monthly_report_json"], {}),
+    }
+
+
+def render_phishing_body(template, target, campaign, base_url):
+    click_url = f"{base_url}/t/{campaign['id']}/{target['id']}"
+    report_url = f"{base_url}/r/{campaign['id']}/{target['id']}"
+    training_url = f"{base_url}/training/{campaign['id']}/{target['id']}"
+    body = template["body"] or phishing_template_content(template)[1]
+    return body.format(
+        employee_name=target["employee_name"],
+        campaign_name=campaign["name"],
+        click_url=click_url,
+        report_url=report_url,
+        training_url=training_url,
+    )
+
+
+def deliver_phishing_message(channel, target, subject, body):
+    if channel == "WhatsApp":
+        if WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID:
+            return send_whatsapp_text(target["phone"], body)
+        return {"sent": True, "simulated": True, "provider": "Meta WhatsApp", "reason": "WHATSAPP_TOKEN/WHATSAPP_PHONE_NUMBER_ID not configured"}
+    if channel == "SMS":
+        if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM:
+            return send_sms_twilio(target["phone"], body)
+        return {"sent": True, "simulated": True, "provider": "Twilio SMS", "reason": "TWILIO_* not configured"}
+    if SENDGRID_API_KEY and target["email"]:
+        return send_email_sendgrid(target["email"], subject, body)
+    return {"sent": True, "simulated": True, "provider": "SendGrid", "reason": "SENDGRID_API_KEY or target email not configured"}
+
+
+def send_email_sendgrid(to_email, subject, body):
+    payload = {
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": EMAIL_FROM},
+        "subject": subject,
+        "content": [{"type": "text/plain", "value": body}],
+    }
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as res:
+            return {"sent": 200 <= res.status < 300, "status": res.status, "provider": "SendGrid"}
+    except urllib.error.URLError as exc:
+        return {"sent": False, "provider": "SendGrid", "reason": str(exc)}
+
+
+def send_sms_twilio(to_phone, body):
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+    payload = urllib.parse.urlencode({"From": TWILIO_FROM, "To": f"+{normalize_phone(to_phone)}", "Body": body}).encode("utf-8")
+    basic = base64.b64encode(f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode("utf-8")).decode("ascii")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as res:
+            return {"sent": 200 <= res.status < 300, "status": res.status, "provider": "Twilio SMS"}
+    except urllib.error.URLError as exc:
+        return {"sent": False, "provider": "Twilio SMS", "reason": str(exc)}
+
+
+def launch_phishing_campaign(con, campaign_id, base_url):
+    campaign = con.execute("SELECT * FROM phishing_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+    if not campaign:
+        return None
+    template = con.execute("SELECT * FROM phishing_templates WHERE id = ?", (campaign["template_id"],)).fetchone()
+    targets = con.execute("SELECT * FROM phishing_targets WHERE campaign_id = ? ORDER BY employee_name", (campaign_id,)).fetchall()
+    results = []
+    launched_at = utc_now()
+    for target in targets:
+        body = render_phishing_body(template, target, campaign, base_url)
+        subject = template["subject"] or f"DOGUI - {campaign['name']}"
+        delivery = deliver_phishing_message(campaign["channel"], target, subject, body)
+        con.execute("UPDATE phishing_targets SET status = 'Enviado', sent_at = COALESCE(sent_at, ?) WHERE id = ?", (launched_at, target["id"]))
+        record_phishing_event(con, campaign_id, target["id"], target["employee_id"], "sent", campaign["channel"], delivery)
+        results.append({"targetId": target["id"], "employeeName": target["employee_name"], **delivery})
+    con.execute("UPDATE phishing_campaigns SET status = 'Activa', launched_at = COALESCE(launched_at, ?) WHERE id = ?", (launched_at, campaign_id))
+    recalculate_campaign_metrics(con, campaign_id)
+    add_audit(con, "Campana phishing lanzada", campaign["name"])
+    return {"campaign": get_phishing_campaign(con, campaign_id), "delivery": results}
+
+
+def record_phishing_event(con, campaign_id, target_id, employee_id, event, channel, metadata=None):
+    con.execute(
+        """
+        INSERT INTO phishing_events (id, campaign_id, target_id, employee_id, event, channel, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (make_id("phevent"), campaign_id, target_id, employee_id, event, channel, json.dumps(metadata or {}, ensure_ascii=False), utc_now()),
+    )
+
+
+def recalculate_campaign_metrics(con, campaign_id):
+    row = con.execute(
+        """
+        SELECT
+          COUNT(sent_at) AS sent,
+          COUNT(clicked_at) AS clicked,
+          COUNT(reported_at) AS reported,
+          COUNT(trained_at) AS trained
+        FROM phishing_targets
+        WHERE campaign_id = ?
+        """,
+        (campaign_id,),
+    ).fetchone()
+    sent = row["sent"] or 0
+    clicked = row["clicked"] or 0
+    reported = row["reported"] or 0
+    trained = row["trained"] or 0
+    score = calculate_resilience_score(sent, clicked, reported)
+    con.execute(
+        "UPDATE phishing_campaigns SET sent = ?, clicked = ?, reported = ?, trained = ?, score = ? WHERE id = ?",
+        (sent, clicked, reported, trained, score, campaign_id),
+    )
+
+
+def resolve_phishing_target(con, campaign_id, target_value):
+    return con.execute(
+        """
+        SELECT * FROM phishing_targets
+        WHERE campaign_id = ?
+          AND (id = ? OR employee_id = ? OR click_token = ? OR report_token = ? OR training_token = ?)
+        LIMIT 1
+        """,
+        (campaign_id, target_value, target_value, target_value, target_value, target_value),
+    ).fetchone()
+
+
+def track_phishing_event(con, campaign_id, target_value, event, channel="Landing", metadata=None):
+    target = resolve_phishing_target(con, campaign_id, target_value)
+    if not target:
+        return None
+    now_value = utc_now()
+    fields = {
+        "clicked": ("clicked_at", "Clic registrado"),
+        "reported": ("reported_at", "Reportado"),
+        "trained": ("trained_at", "Capacitado"),
+    }
+    field, status = fields[event]
+    if not target[field]:
+        con.execute(f"UPDATE phishing_targets SET {field} = ?, status = ? WHERE id = ?", (now_value, status, target["id"]))
+        if event == "clicked":
+            due_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+            con.execute(
+                """
+                INSERT INTO training_assignments (id, employee_id, campaign_id, status, due_at, completed_at, created_at)
+                VALUES (?, ?, ?, 'Pendiente', ?, NULL, ?)
+                """,
+                (make_id("train"), target["employee_id"], campaign_id, due_at, now_value),
+            )
+        if event == "trained":
+            con.execute(
+                "UPDATE training_assignments SET status = 'Completada', completed_at = ? WHERE employee_id = ? AND campaign_id = ? AND completed_at IS NULL",
+                (now_value, target["employee_id"], campaign_id),
+            )
+    record_phishing_event(con, campaign_id, target["id"], target["employee_id"], event, channel, metadata)
+    recalculate_campaign_metrics(con, campaign_id)
+    return con.execute("SELECT * FROM phishing_targets WHERE id = ?", (target["id"],)).fetchone()
+
+
+def build_monthly_phishing_report(con, month=None):
+    month = month or datetime.now().strftime("%Y-%m")
+    rows = con.execute("SELECT * FROM phishing_campaigns WHERE substr(created_at, 1, 7) = ? ORDER BY created_at DESC", (month,)).fetchall()
+    totals = {"sent": 0, "clicked": 0, "reported": 0, "trained": 0}
+    departments = {}
+    campaigns = []
+    for row in rows:
+        campaign = get_phishing_campaign(con, row["id"])
+        campaigns.append(campaign)
+        for key in totals:
+            totals[key] += campaign[key]
+        dept = departments.setdefault(campaign["department"], {"sent": 0, "clicked": 0, "reported": 0, "trained": 0, "score": 100})
+        for key in ["sent", "clicked", "reported", "trained"]:
+            dept[key] += campaign[key]
+        dept["score"] = calculate_resilience_score(dept["sent"], dept["clicked"], dept["reported"])
+    totals["clickRate"] = round((totals["clicked"] / totals["sent"]) * 100) if totals["sent"] else 0
+    totals["reportRate"] = round((totals["reported"] / totals["sent"]) * 100) if totals["sent"] else 0
+    totals["trainingRate"] = round((totals["trained"] / totals["sent"]) * 100) if totals["sent"] else 0
+    totals["score"] = calculate_resilience_score(totals["sent"], totals["clicked"], totals["reported"])
+    return {"month": month, "totals": totals, "departments": departments, "campaigns": campaigns}
+
+
+def training_page(title, body, action_url=None):
+    action = f'<a class="button" href="{action_url}">Completar capacitacion</a>' if action_url else ""
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; font-family:Arial, sans-serif; background:#0f172a; color:#e5eefb; }}
+    main {{ width:min(680px, calc(100% - 32px)); background:#111c33; border:1px solid #2b3b58; border-radius:18px; padding:32px; box-shadow:0 24px 80px rgba(0,0,0,.35); }}
+    h1 {{ margin:0 0 12px; font-size:32px; }}
+    p {{ line-height:1.55; color:#b7c7dc; }}
+    .button {{ display:inline-block; margin-top:14px; background:#2dd4bf; color:#09211f; padding:12px 18px; border-radius:10px; text-decoration:none; font-weight:700; }}
+  </style>
+</head>
+<body><main><h1>{title}</h1><p>{body}</p>{action}</main></body>
+</html>"""
 
 
 def verify_meta_signature(headers, body):
@@ -904,6 +1703,14 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
+    def end_headers(self):
+        if CORS_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        super().end_headers()
+
     def send_json(self, data, status=200, extra_headers=None):
         encoded = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -911,6 +1718,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def send_html(self, html, status=200):
+        encoded = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -936,10 +1751,22 @@ class Handler(SimpleHTTPRequestHandler):
             return None
         return user
 
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.end_headers()
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
-            return self.send_json({"ok": True, "db": str(DB_PATH), "normalizedDb": True, "whatsappConfigured": bool(WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID)})
+            return self.send_json({
+                "ok": True,
+                "db": str(DB_PATH),
+                "normalizedDb": True,
+                "whatsappConfigured": bool(WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID),
+                "sendgridConfigured": bool(SENDGRID_API_KEY),
+                "twilioConfigured": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM),
+                "publicBaseUrl": PUBLIC_BASE_URL or public_base_url(self.headers),
+            })
         if parsed.path == "/api/me":
             user = self.current_user()
             return self.send_json({"user": public_user(user) if user else None})
@@ -959,6 +1786,36 @@ class Handler(SimpleHTTPRequestHandler):
             with connect() as con:
                 rows = [dict(row) for row in con.execute("SELECT * FROM media_attachments ORDER BY created_at DESC LIMIT 200")]
             return self.send_json(rows)
+        if parsed.path == "/api/security/tickets":
+            with connect() as con:
+                return self.send_json(list_security_tickets(con))
+        if parsed.path == "/api/security/alerts":
+            with connect() as con:
+                return self.send_json(list_security_alerts(con))
+        if parsed.path == "/api/phishing/templates":
+            with connect() as con:
+                return self.send_json(list_phishing_templates(con))
+        if parsed.path == "/api/phishing/campaigns":
+            with connect() as con:
+                return self.send_json(list_phishing_campaigns(con))
+        if parsed.path == "/api/phishing/reports/monthly":
+            query = urllib.parse.parse_qs(parsed.query)
+            with connect() as con:
+                return self.send_json(build_monthly_phishing_report(con, query.get("month", [None])[0]))
+        tracking_parts = [urllib.parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
+        if len(tracking_parts) == 3 and tracking_parts[0] in {"t", "r", "training"}:
+            action, campaign_id, target_value = tracking_parts
+            event_name = {"t": "clicked", "r": "reported", "training": "trained"}[action]
+            with connect() as con:
+                target = track_phishing_event(con, campaign_id, target_value, event_name, metadata={"ip": self.client_address[0], "userAgent": self.headers.get("User-Agent", "")})
+            if not target:
+                return self.send_html(training_page("Liga no encontrada", "DOGUI no encontro esta simulacion. Verifica que la campana siga activa."), 404)
+            if action == "t":
+                training_url = f"{public_base_url(self.headers)}/training/{campaign_id}/{target['id']}"
+                return self.send_html(training_page("Simulacion DOGUI", "Este clic fue registrado como parte de una campana controlada. En un ataque real, revisa remitente, dominio, urgencia y adjuntos antes de abrir.", training_url))
+            if action == "r":
+                return self.send_html(training_page("Reporte recibido", "Buen trabajo. DOGUI registro que reportaste la simulacion antes de interactuar con el enlace. Ese comportamiento sube el score de tu equipo."))
+            return self.send_html(training_page("Capacitacion completada", "DOGUI registro la capacitacion. Recuerda reportar links, correos, archivos raros e intentos de fraude directamente por WhatsApp."))
         if parsed.path == "/webhooks/whatsapp":
             query = urllib.parse.parse_qs(parsed.query)
             mode = query.get("hub.mode", [""])[0]
@@ -1014,6 +1871,69 @@ class Handler(SimpleHTTPRequestHandler):
                 employee_id = upsert_employee(con, payload, user["company_id"])
                 add_audit(con, "Empleado guardado", payload.get("name", employee_id), user["name"], user["role"])
             return self.send_json({"ok": True, "id": employee_id})
+
+        if parsed.path == "/api/security/tickets":
+            user = self.require_user()
+            if not user:
+                return
+            _, payload = self.read_json()
+            with connect() as con:
+                employee = con.execute("SELECT * FROM employees WHERE id = ? AND company_id = ? AND active = 1", (payload.get("employeeId"), user["company_id"])).fetchone()
+                if not employee:
+                    return self.send_json({"error": "employee_not_found"}, 404)
+                ticket, alert = create_security_ticket(
+                    con,
+                    employee,
+                    payload.get("type", "Reporte"),
+                    payload.get("detail", ""),
+                    payload.get("severity", "Media"),
+                    source_channel=payload.get("sourceChannel", "Panel"),
+                )
+                add_audit(con, "Ticket de seguridad creado desde panel", ticket["number"], user["name"], user["role"])
+            return self.send_json({"ok": True, "ticket": ticket, "alert": alert})
+
+        if parsed.path.startswith("/api/security/tickets/") and parsed.path.endswith("/status"):
+            user = self.require_user()
+            if not user:
+                return
+            ticket_id = parsed.path.split("/")[4]
+            _, payload = self.read_json()
+            status = payload.get("status", "En revision")
+            closed_at = utc_now() if status == "Cerrado" else None
+            with connect() as con:
+                con.execute(
+                    "UPDATE security_tickets SET status = ?, updated_at = ?, closed_at = ? WHERE id = ?",
+                    (status, utc_now(), closed_at, ticket_id),
+                )
+                if status == "Cerrado":
+                    con.execute("UPDATE security_alerts SET status = 'Cerrada' WHERE ticket_id = ?", (ticket_id,))
+                add_audit(con, "Ticket de seguridad actualizado", f"{ticket_id} -> {status}", user["name"], user["role"])
+                ticket = get_security_ticket(con, ticket_id)
+            return self.send_json({"ok": True, "ticket": ticket})
+
+        if parsed.path == "/api/phishing/campaigns":
+            user = self.require_user()
+            if not user:
+                return
+            _, payload = self.read_json()
+            with connect() as con:
+                campaign = create_phishing_campaign(con, payload, user["company_id"])
+                if payload.get("launchNow"):
+                    launched = launch_phishing_campaign(con, campaign["id"], public_base_url(self.headers))
+                    return self.send_json({"ok": True, **launched})
+            return self.send_json({"ok": True, "campaign": campaign})
+
+        if parsed.path.startswith("/api/phishing/campaigns/") and parsed.path.endswith("/launch"):
+            user = self.require_user()
+            if not user:
+                return
+            campaign_id = parsed.path.split("/")[4]
+            with connect() as con:
+                launched = launch_phishing_campaign(con, campaign_id, public_base_url(self.headers))
+                if not launched:
+                    return self.send_json({"error": "campaign_not_found"}, 404)
+                add_audit(con, "Campana phishing lanzada desde panel", campaign_id, user["name"], user["role"])
+            return self.send_json({"ok": True, **launched})
 
         if parsed.path.startswith("/api/issues/") and parsed.path.endswith("/status"):
             user = self.require_user()
