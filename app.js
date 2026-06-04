@@ -2,11 +2,14 @@ const STORAGE_KEY = "checador-wa-state-v3";
 const SESSION_KEY = "checador-wa-session";
 const oldKeys = ["checador-wa-state-v1", "checador-wa-state-v2"];
 const BACKEND_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-const API_BASE = BACKEND_HOSTS.has(location.hostname) && (location.protocol === "http:" || location.protocol === "https:") ? "" : null;
-const DEMO_MODE = !API_BASE;
+const configuredApiBase = (window.DOGUI_API_BASE || localStorage.getItem("dogui-api-base") || document.querySelector('meta[name="dogui-api-base"]')?.content || "").replace(/\/$/, "");
+const API_BASE = configuredApiBase || (BACKEND_HOSTS.has(location.hostname) && (location.protocol === "http:" || location.protocol === "https:") ? "" : null);
+const HAS_BACKEND = API_BASE !== null;
+const DEMO_MODE = !HAS_BACKEND;
 const now = () => new Date();
 const makeId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 let syncingState = false;
+let integrationHealth = null;
 
 const defaultPolicy = {
   tolerance: 10,
@@ -49,7 +52,7 @@ const seed = {
   report: { from: todayIso(), to: todayIso(), area: "Todas" }
 };
 
-let state = API_BASE ? seed : migrateState(loadState());
+let state = HAS_BACKEND ? seed : migrateState(loadState());
 let session = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
 document.body.dataset.mode = DEMO_MODE ? "demo" : "server";
 if (DEMO_MODE) seedPresentationData();
@@ -93,13 +96,26 @@ function migrateState(raw) {
   return merged;
 }
 
+async function apiFetch(path, options = {}) {
+  if (!HAS_BACKEND) throw new Error("Backend no configurado");
+  const init = {
+    credentials: "include",
+    ...options,
+    headers: { ...(options.headers || {}) }
+  };
+  if (init.body && typeof init.body !== "string") {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(init.body);
+  }
+  return fetch(`${API_BASE}${path}`, init);
+}
+
 function saveState(next = state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  if (API_BASE && !syncingState) {
-    fetch(`${API_BASE}/api/state`, {
+  if (HAS_BACKEND && !syncingState) {
+    apiFetch("/api/state", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(next)
+      body: next
     }).catch((error) => console.warn("No se pudo guardar en backend", error));
   }
 }
@@ -280,10 +296,27 @@ function phishingCampaignSeed(name, channel, template, department, sent, clicked
   return { id: makeId(), name, channel, template, department, sent, clicked, reported, trained, timestamp };
 }
 
-function createSecurityTicket(event) {
+async function createSecurityTicket(event) {
   event.preventDefault();
   const employee = employeeById(byId("securityEmployee").value) || activeEmployees()[0];
   const type = byId("securityType").value;
+  const detail = byId("securityDetail").value;
+  const severity = byId("securitySeverity").value;
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/security/tickets", {
+      method: "POST",
+      body: { employeeId: employee.id, type, detail, severity, sourceChannel: "Panel" }
+    });
+    if (!response.ok) {
+      alert("No se pudo crear el ticket en el backend.");
+      return;
+    }
+    const payload = await response.json();
+    byId("securityDetail").value = "";
+    await hydrateFromBackend();
+    byId("securityAutoResponse").innerHTML = `<strong>Respuesta automatica</strong><span>${payload.ticket.response}</span>`;
+    return;
+  }
   const ticket = securityTicketSeed(employee, type, byId("securityDetail").value, byId("securitySeverity").value);
   state.securityTickets.unshift(ticket);
   state.securityAlerts.unshift({
@@ -308,12 +341,30 @@ function createSecurityTicket(event) {
   render();
 }
 
-function launchPhishingCampaign(event) {
+async function launchPhishingCampaign(event) {
   event.preventDefault();
   const department = byId("campaignDepartment").value;
+  const template = byId("campaignTemplate").value;
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/phishing/campaigns", {
+      method: "POST",
+      body: {
+        name: byId("campaignName").value,
+        channel: byId("campaignChannel").value,
+        template,
+        department,
+        launchNow: true
+      }
+    });
+    if (!response.ok) {
+      alert("No se pudo lanzar la campana en el backend.");
+      return;
+    }
+    await hydrateFromBackend();
+    return;
+  }
   const employees = activeEmployees().filter((employee) => department === "Todos" || employee.area === department);
   const sent = Math.max(8, employees.length * 12);
-  const template = byId("campaignTemplate").value;
   const riskBoost = template.toLowerCase().includes("sat") || template.toLowerCase().includes("banco") ? 0.34 : 0.24;
   const clicked = Math.max(1, Math.round(sent * riskBoost));
   const reported = Math.max(1, Math.round(sent * 0.42));
@@ -327,10 +378,12 @@ function launchPhishingCampaign(event) {
 }
 
 async function hydrateFromBackend() {
-  if (!API_BASE) return;
+  if (!HAS_BACKEND) return;
   try {
     syncingState = true;
-    const sessionResponse = await fetch(`${API_BASE}/api/me`);
+    const healthResponse = await apiFetch("/api/health");
+    if (healthResponse.ok) integrationHealth = await healthResponse.json();
+    const sessionResponse = await apiFetch("/api/me");
     if (sessionResponse.ok) {
       const sessionPayload = await sessionResponse.json();
       if (sessionPayload.user) {
@@ -341,7 +394,7 @@ async function hydrateFromBackend() {
         localStorage.removeItem(SESSION_KEY);
       }
     }
-    const response = await fetch(`${API_BASE}/api/state`);
+    const response = await apiFetch("/api/state");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state = migrateState(await response.json());
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -581,6 +634,32 @@ function closeAlert(id) {
   if (!alert) return;
   alert.status = "Cerrada";
   addAudit("Alerta cerrada", `${alert.employeeName}: ${alert.type}`);
+  saveState();
+  render();
+}
+
+async function updateSecurityTicketStatus(id, status) {
+  if (HAS_BACKEND) {
+    const response = await apiFetch(`/api/security/tickets/${id}/status`, {
+      method: "POST",
+      body: { status }
+    });
+    if (!response.ok) {
+      alert("No se pudo actualizar el ticket.");
+      return;
+    }
+    await hydrateFromBackend();
+    return;
+  }
+  const ticket = (state.securityTickets || []).find((item) => item.id === id);
+  if (!ticket) return;
+  ticket.status = status;
+  ticket.updatedAt = now().toISOString();
+  if (status === "Cerrado") ticket.closedAt = now().toISOString();
+  (state.securityAlerts || []).forEach((alert) => {
+    if (alert.ticketId === id || alert.detail?.includes(ticket.number)) alert.status = status === "Cerrado" ? "Cerrada" : "Activa";
+  });
+  addAudit("Ticket de seguridad actualizado", `${ticket.number} -> ${status}`);
   saveState();
   render();
 }
@@ -869,10 +948,17 @@ function renderBranches() {
 }
 
 function renderIntegrations() {
+  const health = integrationHealth || {};
+  const modeLabel = HAS_BACKEND ? "Backend conectado" : "Demo local";
+  const statusPill = (ok) => `<span class="pill ${ok ? "ok" : "warn"}">${ok ? "Activo" : "Por configurar"}</span>`;
   byId("integrationStatus").innerHTML = `
-    <div class="row-card"><div><strong>Webhook HTTPS</strong><span>Necesario para conectar mensajes reales de WhatsApp.</span></div><span class="pill warn">Simulado</span></div>
+    <div class="row-card"><div><strong>Modo de operacion</strong><span>${modeLabel}</span></div><span class="pill ${HAS_BACKEND ? "ok" : "warn"}">${HAS_BACKEND ? "API" : "Demo"}</span></div>
+    <div class="row-card"><div><strong>Webhook WhatsApp</strong><span>/webhooks/whatsapp para asistencia, evidencias e incidentes.</span></div>${statusPill(Boolean(health.whatsappConfigured))}</div>
+    <div class="row-card"><div><strong>SendGrid correo</strong><span>Campanas de phishing por email con tracking.</span></div>${statusPill(Boolean(health.sendgridConfigured))}</div>
+    <div class="row-card"><div><strong>Twilio SMS</strong><span>Campanas por SMS y enlaces medibles.</span></div>${statusPill(Boolean(health.twilioConfigured))}</div>
+    <div class="row-card"><div><strong>Tracking publico</strong><span>${health.publicBaseUrl || "Configura PUBLIC_BASE_URL para links reales."}</span></div><span class="pill ok">Incluido</span></div>
     <div class="row-card"><div><strong>Validacion de telefono</strong><span>El empleado solo puede checar desde su numero registrado.</span></div><span class="pill ok">Incluido</span></div>
-    <div class="row-card"><div><strong>Plantillas de respuesta</strong><span>Confirmacion de entrada, salida, saldo e incidencias.</span></div><span class="pill ok">Incluido</span></div>
+    <div class="row-card"><div><strong>Tickets y reportes</strong><span>Security Assistant y Phishing Simulator ya usan tablas propias.</span></div><span class="pill ok">Incluido</span></div>
   `;
 }
 
@@ -888,7 +974,7 @@ function renderSecurityAssistant() {
   byId("securityTickets").innerHTML = tickets.slice(0, 8).map((ticket) => `
     <div class="ticket-card ${ticket.severity === "Alta" ? "critical" : ""}">
       <div>
-        <span>${ticket.number}</span>
+        <span>${ticket.number} - ${ticket.sourceChannel || "Panel"}</span>
         <strong>${ticket.type}</strong>
         <p>${ticket.detail}</p>
       </div>
@@ -896,15 +982,19 @@ function renderSecurityAssistant() {
         <span class="pill ${ticket.severity === "Alta" ? "danger" : "warn"}">${ticket.severity}</span>
         <small>${ticket.employeeName} - ${ticket.department}</small>
         <small>${ticket.status}</small>
+        <div class="ticket-actions">
+          <button data-action="review-security" data-id="${ticket.id}">Revisar</button>
+          <button data-action="close-security" data-id="${ticket.id}">Cerrar</button>
+        </div>
       </div>
     </div>
-  `).join("");
+  `).join("") || `<p>Sin tickets de seguridad.</p>`;
   byId("securityAlerts").innerHTML = (state.securityAlerts || []).slice(0, 6).map((alert) => `
     <div class="row-card">
       <div><strong>${alert.title}</strong><span>${alert.detail}</span></div>
       <span class="pill ${alert.severity === "Alta" ? "danger" : "warn"}">${alert.status}</span>
     </div>
-  `).join("");
+  `).join("") || `<p>Sin alertas internas.</p>`;
 }
 
 function renderPhishingSimulator() {
@@ -952,12 +1042,13 @@ function renderPhishingSimulator() {
   byId("monthlySecurityReport").innerHTML = latest ? `
     <div class="report-card">
       <strong>${latest.name}</strong>
-      <span>${latest.channel} - ${latest.template} - ${latest.department}</span>
+      <span>${latest.channel} - ${latest.template} - ${latest.department} - ${latest.status || "Activa"}</span>
       <div class="report-stats">
         <div><strong>${latest.sent}</strong><span>enviados</span></div>
         <div><strong>${latest.clicked}</strong><span>clics</span></div>
         <div><strong>${latest.reported}</strong><span>reportes</span></div>
         <div><strong>${latest.trained}</strong><span>capacitados</span></div>
+        <div><strong>${latest.score || resilience}</strong><span>score</span></div>
       </div>
     </div>
   ` : `<p>Sin campanas simuladas.</p>`;
@@ -1014,11 +1105,10 @@ function downloadCsv() {
 
 byId("loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (API_BASE) {
-    const response = await fetch(`${API_BASE}/api/login`, {
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/login", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: byId("loginUser").value, password: byId("loginPassword").value })
+      body: { email: byId("loginUser").value, password: byId("loginPassword").value }
     });
     if (!response.ok) {
       alert("Usuario o contrasena incorrectos.");
@@ -1039,8 +1129,8 @@ byId("loginForm").addEventListener("submit", async (event) => {
 });
 
 byId("logoutButton").addEventListener("click", async () => {
-  if (API_BASE) {
-    await fetch(`${API_BASE}/api/logout`, { method: "POST" }).catch(() => {});
+  if (HAS_BACKEND) {
+    await apiFetch("/api/logout", { method: "POST" }).catch(() => {});
   }
   addAudit("Cierre de sesion", session?.user || "");
   session = null;
@@ -1131,7 +1221,9 @@ document.addEventListener("click", (event) => {
     "deactivate-employee": () => deactivateEmployee(id),
     "approve-issue": () => updateIssue(id, "Aprobada"),
     "reject-issue": () => updateIssue(id, "Rechazada"),
-    "close-alert": () => closeAlert(id)
+    "close-alert": () => closeAlert(id),
+    "review-security": () => updateSecurityTicketStatus(id, "En revision"),
+    "close-security": () => updateSecurityTicketStatus(id, "Cerrado")
   };
   actions[button.dataset.action]?.();
 });
