@@ -957,6 +957,19 @@ body[data-mode="demo"] .status::after {
   text-align: right;
 }
 
+.ticket-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ticket-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+}
+
 .metric-bars,
 .score-list {
   display: grid;
@@ -1123,6 +1136,18 @@ body[data-mode="demo"] .status::after {
 
   .row-card {
     grid-template-columns: 1fr;
+  }
+
+  .ticket-card {
+    grid-template-columns: 1fr;
+  }
+
+  .ticket-card small {
+    text-align: left;
+  }
+
+  .ticket-actions {
+    justify-content: flex-start;
   }
 
   .row-actions {
