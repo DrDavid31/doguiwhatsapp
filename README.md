@@ -8,7 +8,7 @@ Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se mues
 
 - Vista ejecutiva para presentacion comercial en GitHub Pages.
 - Login visual con resumen de valor y simulacion de conversacion WhatsApp.
-- Panel de salud operativa con barras de cobertura, evidencia, nomina y riesgo.
+- Panel de salud operativa con barras de cobertura, evidencia y riesgo.
 - Mapa visual de checadas por sucursal y estado.
 - DOGUI WhatsApp Security Assistant para reportar links sospechosos, correos falsos, archivos raros e intentos de fraude.
 - Creacion automatica de tickets, alertas internas y respuestas tipo "No abras el archivo".
@@ -26,9 +26,9 @@ Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se mues
 - Vista de quien esta trabajando ahora.
 - Reportes por periodo, area y sucursal.
 - Calendario de asistencia.
-- Exportacion CSV para nomina.
+- Exportacion CSV de asistencia para revision interna.
 - Auditoria de acciones administrativas.
-- Panel de preparacion para WhatsApp Cloud API y API de nomina.
+- Panel de preparacion para WhatsApp Cloud API y API operativa.
 
 ## Como probar sin backend
 
@@ -38,7 +38,7 @@ Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se mues
 4. Prueba con GPS cerca de Sucursal Centro: `19.432608`, `-99.133209`.
 5. Prueba otra entrada sin GPS para ver alertas.
 6. Envia `vacaciones 10/06 al 12/06` y aprueba la incidencia.
-7. Exporta el CSV de nomina.
+7. Exporta el CSV de asistencia.
 
 ## Publicar en GitHub Pages
 
@@ -176,13 +176,13 @@ Si un proveedor no esta configurado, la campana corre en modo simulado: marca ob
 - Agregar email real al catalogo de empleados para campanas por correo.
 - Definir permisos finos por rol y bitacoras legales.
 - Agregar aviso de privacidad, consentimiento y politicas internas.
-- Integracion directa con sistema de nomina/SIEM/ticketing externo.
+- Integracion directa con SIEM/ticketing externo.
 
 ## Modelo de backend recomendado
 
 - `POST /webhooks/whatsapp`: recibe mensajes de WhatsApp.
 - `POST /records`: crea registros de asistencia.
-- `GET /reports/payroll`: genera reporte para nomina.
+- `GET /reports/attendance`: genera reporte de asistencia.
 - `POST /issues/:id/approve`: aprueba permisos, vacaciones e incapacidades.
 - `GET /audit`: consulta historial de cambios.
 
