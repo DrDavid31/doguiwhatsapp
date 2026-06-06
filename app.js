@@ -10,6 +10,11 @@ const now = () => new Date();
 const makeId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 let syncingState = false;
 let integrationHealth = null;
+let backendSaveTimer = null;
+let pendingBackendPayload = "";
+const elementCache = new Map();
+const dateFormatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
+const timeFormatter = new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit" });
 
 const defaultPolicy = {
   tolerance: 10,
@@ -113,10 +118,15 @@ async function apiFetch(path, options = {}) {
 function saveState(next = state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   if (HAS_BACKEND && !syncingState) {
-    apiFetch("/api/state", {
-      method: "PUT",
-      body: next
-    }).catch((error) => console.warn("No se pudo guardar en backend", error));
+    pendingBackendPayload = JSON.stringify(next);
+    window.clearTimeout(backendSaveTimer);
+    backendSaveTimer = window.setTimeout(() => {
+      apiFetch("/api/state", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: pendingBackendPayload
+      }).catch((error) => console.warn("No se pudo guardar en backend", error));
+    }, 450);
   }
 }
 
@@ -314,7 +324,7 @@ async function createSecurityTicket(event) {
     const payload = await response.json();
     byId("securityDetail").value = "";
     await hydrateFromBackend();
-    byId("securityAutoResponse").innerHTML = `<strong>Respuesta automatica</strong><span>${payload.ticket.response}</span>`;
+    byId("securityAutoResponse").innerHTML = `<strong>Respuesta automatica</strong><span>${escapeHtml(payload.ticket.response)}</span>`;
     return;
   }
   const ticket = securityTicketSeed(employee, type, byId("securityDetail").value, byId("securitySeverity").value);
@@ -335,7 +345,7 @@ async function createSecurityTicket(event) {
     timestamp: ticket.timestamp
   });
   addAudit("Ticket de seguridad creado", `${ticket.number} - ${ticket.type}`);
-  byId("securityAutoResponse").innerHTML = `<strong>Respuesta automatica</strong><span>${ticket.response}</span>`;
+  byId("securityAutoResponse").innerHTML = `<strong>Respuesta automatica</strong><span>${escapeHtml(ticket.response)}</span>`;
   byId("securityDetail").value = "";
   saveState();
   render();
@@ -407,7 +417,8 @@ async function hydrateFromBackend() {
 }
 
 function byId(id) {
-  return document.getElementById(id);
+  if (!elementCache.has(id)) elementCache.set(id, document.getElementById(id));
+  return elementCache.get(id);
 }
 
 function todayIso() {
@@ -415,11 +426,25 @@ function todayIso() {
 }
 
 function formatDate(dateValue) {
-  return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(dateValue));
+  return dateFormatter.format(new Date(dateValue));
 }
 
 function formatTime(dateValue) {
-  return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit" }).format(new Date(dateValue));
+  return timeFormatter.format(new Date(dateValue));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
+}
+
+function clamp(value, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function minutesFromTime(value) {
@@ -728,22 +753,106 @@ function statusClass(value) {
   return "danger";
 }
 
+function scoreClass(score) {
+  if (score >= 82) return "ok";
+  if (score >= 62) return "warn";
+  return "danger";
+}
+
+function getDashboardMetrics() {
+  const employees = activeEmployees();
+  const today = new Date().toDateString();
+  const todayRecords = state.records.filter((record) => record.branchId === state.selectedBranchId && new Date(record.timestamp).toDateString() === today);
+  const entries = todayRecords.filter((record) => record.event === "entrada").length;
+  const late = todayRecords.filter((record) => record.status === "Retardo").length;
+  const evidence = todayRecords.filter((record) => record.evidence).length;
+  const openIssues = state.issues.filter((issue) => issue.status === "Pendiente").length;
+  const openAlerts = state.alerts.filter((alert) => alert.status === "Abierta").length;
+  const securityTickets = state.securityTickets || [];
+  const openSecurityTickets = securityTickets.filter((ticket) => ticket.status !== "Cerrado").length;
+  const highSecurityTickets = securityTickets.filter((ticket) => ticket.severity === "Alta" && ticket.status !== "Cerrado").length;
+  const campaigns = state.phishingCampaigns || [];
+  const phishingTotals = campaigns.reduce((acc, item) => {
+    acc.sent += item.sent || 0;
+    acc.clicked += item.clicked || 0;
+    acc.reported += item.reported || 0;
+    acc.trained += item.trained || 0;
+    return acc;
+  }, { sent: 0, clicked: 0, reported: 0, trained: 0 });
+  const clickRate = phishingTotals.sent ? Math.round((phishingTotals.clicked / phishingTotals.sent) * 100) : 0;
+  const reportRate = phishingTotals.sent ? Math.round((phishingTotals.reported / phishingTotals.sent) * 100) : 0;
+  const trainingRate = phishingTotals.sent ? Math.round((phishingTotals.trained / phishingTotals.sent) * 100) : 0;
+  const attendanceRate = employees.length ? clamp(Math.round((entries / employees.length) * 100)) : 0;
+  const evidenceRate = todayRecords.length ? Math.round((evidence / todayRecords.length) * 100) : 0;
+  const riskScore = clamp(openAlerts * 14 + openIssues * 10 + late * 8 + highSecurityTickets * 12);
+  const operationalScore = clamp(Math.round(100 - riskScore + evidenceRate * 0.15));
+  const securityScore = clamp(100 - openSecurityTickets * 8 - highSecurityTickets * 12 + reportRate * 0.15);
+  const phishingScore = clamp(100 - clickRate + Math.round(reportRate * 0.4) + Math.round(trainingRate * 0.15));
+  const working = employees.filter((employee) => currentWorkState(employee.id) === "En turno").length;
+  return {
+    employees,
+    todayRecords,
+    attendanceRate,
+    evidenceRate,
+    riskScore,
+    operationalScore,
+    securityScore,
+    phishingScore,
+    openIssues,
+    openAlerts,
+    openSecurityTickets,
+    highSecurityTickets,
+    campaigns,
+    clickRate,
+    reportRate,
+    trainingRate,
+    working
+  };
+}
+
+function renderCommandCenter() {
+  const metrics = getDashboardMetrics();
+  const riskLabel = metrics.riskScore > 58 ? "Riesgo alto" : metrics.riskScore > 26 ? "Riesgo medio" : "Riesgo bajo";
+  byId("modePill").textContent = DEMO_MODE ? "Demo" : "API activa";
+  byId("modePill").className = `pill ${DEMO_MODE ? "warn" : "ok"}`;
+  byId("riskPill").textContent = riskLabel;
+  byId("riskPill").className = `pill ${scoreClass(100 - metrics.riskScore)}`;
+  byId("commandNarrative").innerHTML = `
+    <strong>${metrics.working} en turno - ${metrics.openSecurityTickets} tickets abiertos - ${metrics.campaigns.length} campanas</strong>
+    <span>${riskLabel}. Cobertura ${metrics.attendanceRate}%, evidencia ${metrics.evidenceRate}% y phishing score ${metrics.phishingScore}%.</span>
+  `;
+  const responseLabel = metrics.openSecurityTickets ? `${Math.min(15, Math.max(3, metrics.openSecurityTickets * 3))} min` : "Al dia";
+  const kpis = [
+    ["Operacion", `${metrics.operationalScore}%`, `${metrics.openIssues} incidencias abiertas`, metrics.operationalScore],
+    ["Seguridad", `${metrics.securityScore}%`, `${metrics.highSecurityTickets} prioridad alta`, metrics.securityScore],
+    ["Phishing", `${metrics.phishingScore}%`, `${metrics.reportRate}% reportes`, metrics.phishingScore],
+    ["Respuesta", responseLabel, `${metrics.openAlerts} alertas activas`, 100 - metrics.riskScore]
+  ];
+  byId("commandKpis").innerHTML = kpis.map(([label, value, detail, score]) => `
+    <div class="kpi-tile ${scoreClass(score)}">
+      <span>${label}</span>
+      <strong>${value}</strong>
+      <small>${detail}</small>
+    </div>
+  `).join("");
+}
+
 function renderSelectors() {
-  byId("companySelect").innerHTML = state.companies.map((company) => `<option value="${company.id}">${company.name}</option>`).join("");
+  byId("companySelect").innerHTML = state.companies.map((company) => `<option value="${escapeHtml(company.id)}">${escapeHtml(company.name)}</option>`).join("");
   byId("companySelect").value = state.selectedCompanyId;
-  const branchOptions = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId).map((branch) => `<option value="${branch.id}">${branch.name}</option>`).join("");
+  const branchOptions = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId).map((branch) => `<option value="${escapeHtml(branch.id)}">${escapeHtml(branch.name)}</option>`).join("");
   byId("branchSelect").innerHTML = branchOptions;
   byId("branchSelect").value = state.selectedBranchId;
   byId("employeeBranch").innerHTML = branchOptions;
   byId("employeeBranch").value = state.selectedBranchId;
-  byId("employeeSelect").innerHTML = activeEmployees().map((employee) => `<option value="${employee.id}">${employee.name} - ${employee.phone}</option>`).join("");
-  byId("securityEmployee").innerHTML = activeEmployees().map((employee) => `<option value="${employee.id}">${employee.name} - ${employee.area}</option>`).join("");
+  byId("employeeSelect").innerHTML = activeEmployees().map((employee) => `<option value="${escapeHtml(employee.id)}">${escapeHtml(employee.name)} - ${escapeHtml(employee.phone)}</option>`).join("");
+  byId("securityEmployee").innerHTML = activeEmployees().map((employee) => `<option value="${escapeHtml(employee.id)}">${escapeHtml(employee.name)} - ${escapeHtml(employee.area)}</option>`).join("");
   const areas = ["Todas", ...new Set(state.employees.filter((employee) => employee.active).map((employee) => employee.area))];
-  byId("reportArea").innerHTML = areas.map((area) => `<option>${area}</option>`).join("");
+  byId("reportArea").innerHTML = areas.map((area) => `<option>${escapeHtml(area)}</option>`).join("");
   byId("reportArea").value = state.report.area;
   const departments = ["Todos", ...new Set(state.employees.filter((employee) => employee.active).map((employee) => employee.area))];
-  byId("campaignDepartment").innerHTML = departments.map((area) => `<option>${area}</option>`).join("");
-  byId("campaignTemplate").innerHTML = state.phishingTemplates.map((template) => `<option>${template.name}</option>`).join("");
+  byId("campaignDepartment").innerHTML = departments.map((area) => `<option>${escapeHtml(area)}</option>`).join("");
+  byId("campaignTemplate").innerHTML = state.phishingTemplates.map((template) => `<option>${escapeHtml(template.name)}</option>`).join("");
 }
 
 function renderEmployees() {
@@ -755,8 +864,8 @@ function renderEmployees() {
       return `
         <div class="row-card">
           <div>
-            <strong>${employee.name}</strong>
-            <span>${employee.phone} - ${employee.area} - ${employee.role} - ${employee.mode} - ${employee.start}-${employee.end}</span>
+            <strong>${escapeHtml(employee.name)}</strong>
+            <span>${escapeHtml(employee.phone)} - ${escapeHtml(employee.area)} - ${escapeHtml(employee.role)} - ${escapeHtml(employee.mode)} - ${escapeHtml(employee.start)}-${escapeHtml(employee.end)}</span>
           </div>
           <div class="row-actions">
             <span class="pill ${statusClass(active)}">${active}</span>
@@ -777,12 +886,12 @@ function renderRecords() {
     .map((record) => `
       <tr>
         <td>${formatDate(record.timestamp)}</td>
-        <td>${record.employeeName}</td>
-        <td>${record.event}${record.evidence ? " + evidencia" : ""}</td>
+        <td>${escapeHtml(record.employeeName)}</td>
+        <td>${escapeHtml(record.event)}${record.evidence ? " + evidencia" : ""}</td>
         <td>${formatTime(record.timestamp)}</td>
-        <td>${branchById(record.branchId).name}</td>
-        <td>${record.location}${record.distance ? ` (${Math.round(record.distance)} m)` : ""}</td>
-        <td><span class="pill ${statusClass(record.status)}">${record.status}</span></td>
+        <td>${escapeHtml(branchById(record.branchId).name)}</td>
+        <td>${escapeHtml(record.location)}${record.distance ? ` (${Math.round(record.distance)} m)` : ""}</td>
+        <td><span class="pill ${statusClass(record.status)}">${escapeHtml(record.status)}</span></td>
       </tr>
     `)
     .join("");
@@ -793,8 +902,8 @@ function renderIssues() {
     ? state.issues.map((issue) => `
       <div class="row-card">
         <div>
-          <strong>${issue.employeeName} - ${issue.type}</strong>
-          <span>${issue.detail} - ${formatDate(issue.timestamp)} ${formatTime(issue.timestamp)}</span>
+          <strong>${escapeHtml(issue.employeeName)} - ${escapeHtml(issue.type)}</strong>
+          <span>${escapeHtml(issue.detail)} - ${formatDate(issue.timestamp)} ${formatTime(issue.timestamp)}</span>
         </div>
         <div class="row-actions">
           <span class="pill ${statusClass(issue.status)}">${issue.status}</span>
@@ -809,7 +918,7 @@ function renderIssues() {
 function renderBalances() {
   byId("balancesList").innerHTML = activeEmployees().map((employee) => `
     <div class="row-card">
-      <div><strong>${employee.name}</strong><span>${employee.area} - ${employee.phone}</span></div>
+      <div><strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.area)} - ${escapeHtml(employee.phone)}</span></div>
       <span class="pill ok">${employee.vacationDays} dias disponibles</span>
     </div>
   `).join("");
@@ -817,15 +926,15 @@ function renderBalances() {
 
 function renderChat() {
   byId("chatLog").innerHTML = state.chat.slice(0, 10).flatMap((item) => [
-    `<div class="bubble"><strong>${item.employeeName}</strong><br>${item.message}<small>${formatTime(item.timestamp)}</small></div>`,
-    `<div class="bubble system">${item.response}<small>Bot RRHH</small></div>`
+    `<div class="bubble"><strong>${escapeHtml(item.employeeName)}</strong><br>${escapeHtml(item.message)}<small>${formatTime(item.timestamp)}</small></div>`,
+    `<div class="bubble system">${escapeHtml(item.response)}<small>Bot RRHH</small></div>`
   ]).join("");
 }
 
 function renderWorkingNow() {
   byId("workingNowList").innerHTML = activeEmployees().map((employee) => {
     const workState = currentWorkState(employee.id);
-    return `<div class="row-card"><div><strong>${employee.name}</strong><span>${employee.area} - ${employee.start}-${employee.end}</span></div><span class="pill ${statusClass(workState)}">${workState}</span></div>`;
+    return `<div class="row-card"><div><strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.area)} - ${escapeHtml(employee.start)}-${escapeHtml(employee.end)}</span></div><span class="pill ${statusClass(workState)}">${workState}</span></div>`;
   }).join("");
 }
 
@@ -835,7 +944,7 @@ function renderAlerts() {
   byId("alertsList").innerHTML = open.length
     ? open.map((alert) => `
       <div class="row-card">
-        <div><strong>${alert.employeeName} - ${alert.type}</strong><span>${alert.detail} - ${formatTime(alert.timestamp)}</span></div>
+        <div><strong>${escapeHtml(alert.employeeName)} - ${escapeHtml(alert.type)}</strong><span>${escapeHtml(alert.detail)} - ${formatTime(alert.timestamp)}</span></div>
         <div class="row-actions"><span class="pill ${alert.severity === "danger" ? "danger" : "warn"}">${alert.status}</span><button data-action="close-alert" data-id="${alert.id}">Cerrar</button></div>
       </div>
     `).join("")
@@ -853,8 +962,8 @@ function renderSummary() {
   });
   byId("summaryList").innerHTML = rows.map((row) => `
     <div class="row-card">
-      <div><strong>${row.employee.name}</strong><span>${row.records} registros - ${row.late} retardos - ${row.worked.toFixed(1)} h trabajadas - ${row.overtime.toFixed(1)} h extra</span></div>
-      <span class="pill ${row.late ? "warn" : "ok"}">${row.employee.area}</span>
+      <div><strong>${escapeHtml(row.employee.name)}</strong><span>${row.records} registros - ${row.late} retardos - ${row.worked.toFixed(1)} h trabajadas - ${row.overtime.toFixed(1)} h extra</span></div>
+      <span class="pill ${row.late ? "warn" : "ok"}">${escapeHtml(row.employee.area)}</span>
     </div>
   `).join("");
   byId("metricWorking").textContent = rows.filter((row) => currentWorkState(row.employee.id) === "En turno").length;
@@ -865,22 +974,12 @@ function renderSummary() {
 }
 
 function renderExecutiveInsights() {
-  const employees = activeEmployees();
-  const todayRecords = state.records.filter((record) => new Date(record.timestamp).toDateString() === new Date().toDateString());
-  const entries = todayRecords.filter((record) => record.event === "entrada").length;
-  const late = todayRecords.filter((record) => record.status === "Retardo").length;
-  const evidence = todayRecords.filter((record) => record.evidence).length;
-  const openIssues = state.issues.filter((issue) => issue.status === "Pendiente").length;
-  const openAlerts = state.alerts.filter((alert) => alert.status === "Abierta").length;
-  const attendanceRate = employees.length ? Math.min(100, Math.round((entries / employees.length) * 100)) : 0;
-  const evidenceRate = todayRecords.length ? Math.round((evidence / todayRecords.length) * 100) : 0;
-  const riskScore = Math.min(100, openAlerts * 18 + openIssues * 12 + late * 10);
-  const operationalReadiness = Math.max(0, Math.min(100, 100 - riskScore + evidenceRate * 0.15));
+  const metrics = getDashboardMetrics();
   const rows = [
-    ["Cobertura de asistencia", attendanceRate, "ok"],
-    ["Evidencia verificada", evidenceRate, "ok"],
-    ["Operacion al dia", Math.round(operationalReadiness), operationalReadiness > 80 ? "ok" : "warn"],
-    ["Riesgo operativo", riskScore, riskScore > 45 ? "danger" : "warn"]
+    ["Cobertura de asistencia", metrics.attendanceRate, "ok"],
+    ["Evidencia verificada", metrics.evidenceRate, "ok"],
+    ["Operacion al dia", metrics.operationalScore, metrics.operationalScore > 80 ? "ok" : "warn"],
+    ["Riesgo operativo", metrics.riskScore, metrics.riskScore > 45 ? "danger" : "warn"]
   ];
 
   byId("healthInsights").innerHTML = rows.map(([label, value, kind]) => `
@@ -904,13 +1003,13 @@ function renderGeoMap() {
     const left = Math.max(12, Math.min(88, 50 + ((record.lng || branch.lng) - branch.lng) * 900 + index * 5));
     const top = Math.max(16, Math.min(82, 50 - ((record.lat || branch.lat) - branch.lat) * 900 + index * 4));
     const kind = record.status === "Retardo" || record.suspicious ? "warn" : "ok";
-    return `<button class="map-pin ${kind}" style="left:${left}%;top:${top}%" title="${record.employeeName} - ${record.status}"></button>`;
+    return `<button class="map-pin ${kind}" style="left:${left}%;top:${top}%" title="${escapeHtml(record.employeeName)} - ${escapeHtml(record.status)}"></button>`;
   }).join("");
 
   byId("geoMap").innerHTML = `
     <div class="map-grid"></div>
     <div class="map-radius"></div>
-    <div class="map-branch"><strong>${branch.name}</strong><span>${branch.lat.toFixed(4)}, ${branch.lng.toFixed(4)}</span></div>
+    <div class="map-branch"><strong>${escapeHtml(branch.name)}</strong><span>${branch.lat.toFixed(4)}, ${branch.lng.toFixed(4)}</span></div>
     ${pins || `<button class="map-pin ok" style="left:52%;top:48%" title="Sucursal base"></button>`}
     <div class="map-legend">
       <span><i class="ok"></i> A tiempo</span>
@@ -943,7 +1042,7 @@ function renderPolicy() {
 
 function renderBranches() {
   byId("branchList").innerHTML = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId).map((branch) => `
-    <div class="row-card"><div><strong>${branch.name}</strong><span>${branch.lat}, ${branch.lng} - radio ${state.policy.geofenceRadius} m</span></div><span class="pill ${branch.id === state.selectedBranchId ? "ok" : "warn"}">${branch.id === state.selectedBranchId ? "Actual" : "Disponible"}</span></div>
+    <div class="row-card"><div><strong>${escapeHtml(branch.name)}</strong><span>${branch.lat}, ${branch.lng} - radio ${state.policy.geofenceRadius} m</span></div><span class="pill ${branch.id === state.selectedBranchId ? "ok" : "warn"}">${branch.id === state.selectedBranchId ? "Actual" : "Disponible"}</span></div>
   `).join("");
 }
 
@@ -967,6 +1066,11 @@ function renderSecurityAssistant() {
   const openTickets = tickets.filter((ticket) => ticket.status !== "Cerrado").length;
   const highTickets = tickets.filter((ticket) => ticket.severity === "Alta").length;
   const responseRate = tickets.length ? Math.round((tickets.filter((ticket) => ticket.response).length / tickets.length) * 100) : 0;
+  byId("securitySuiteStats").innerHTML = `
+    <span class="pill ${openTickets ? "warn" : "ok"}">${openTickets} abiertos</span>
+    <span class="pill ${highTickets ? "danger" : "ok"}">${highTickets} alta prioridad</span>
+    <span class="pill ok">${responseRate}% auto-respuesta</span>
+  `;
   byId("securityAutoResponse").innerHTML = `
     <strong>${openTickets} tickets activos</strong>
     <span>${highTickets} de prioridad alta. ${responseRate}% con respuesta automatica lista.</span>
@@ -974,14 +1078,14 @@ function renderSecurityAssistant() {
   byId("securityTickets").innerHTML = tickets.slice(0, 8).map((ticket) => `
     <div class="ticket-card ${ticket.severity === "Alta" ? "critical" : ""}">
       <div>
-        <span>${ticket.number} - ${ticket.sourceChannel || "Panel"}</span>
-        <strong>${ticket.type}</strong>
-        <p>${ticket.detail}</p>
+        <span>${escapeHtml(ticket.number)} - ${escapeHtml(ticket.sourceChannel || "Panel")}</span>
+        <strong>${escapeHtml(ticket.type)}</strong>
+        <p>${escapeHtml(ticket.detail)}</p>
       </div>
       <div>
         <span class="pill ${ticket.severity === "Alta" ? "danger" : "warn"}">${ticket.severity}</span>
-        <small>${ticket.employeeName} - ${ticket.department}</small>
-        <small>${ticket.status}</small>
+        <small>${escapeHtml(ticket.employeeName)} - ${escapeHtml(ticket.department)}</small>
+        <small>${escapeHtml(ticket.status)}</small>
         <div class="ticket-actions">
           <button data-action="review-security" data-id="${ticket.id}">Revisar</button>
           <button data-action="close-security" data-id="${ticket.id}">Cerrar</button>
@@ -991,7 +1095,7 @@ function renderSecurityAssistant() {
   `).join("") || `<p>Sin tickets de seguridad.</p>`;
   byId("securityAlerts").innerHTML = (state.securityAlerts || []).slice(0, 6).map((alert) => `
     <div class="row-card">
-      <div><strong>${alert.title}</strong><span>${alert.detail}</span></div>
+      <div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div>
       <span class="pill ${alert.severity === "Alta" ? "danger" : "warn"}">${alert.status}</span>
     </div>
   `).join("") || `<p>Sin alertas internas.</p>`;
@@ -999,17 +1103,16 @@ function renderSecurityAssistant() {
 
 function renderPhishingSimulator() {
   const campaigns = state.phishingCampaigns || [];
-  const total = campaigns.reduce((acc, item) => {
-    acc.sent += item.sent;
-    acc.clicked += item.clicked;
-    acc.reported += item.reported;
-    acc.trained += item.trained;
-    return acc;
-  }, { sent: 0, clicked: 0, reported: 0, trained: 0 });
-  const clickRate = total.sent ? Math.round((total.clicked / total.sent) * 100) : 0;
-  const reportRate = total.sent ? Math.round((total.reported / total.sent) * 100) : 0;
-  const trainingRate = total.sent ? Math.round((total.trained / total.sent) * 100) : 0;
-  const resilience = Math.max(0, Math.min(100, 100 - clickRate + reportRate));
+  const dashboard = getDashboardMetrics();
+  const clickRate = dashboard.clickRate;
+  const reportRate = dashboard.reportRate;
+  const trainingRate = dashboard.trainingRate;
+  const resilience = dashboard.phishingScore;
+  byId("phishingSuiteStats").innerHTML = `
+    <span class="pill ${campaigns.length ? "ok" : "warn"}">${campaigns.length} campanas</span>
+    <span class="pill ${clickRate > 30 ? "danger" : clickRate > 15 ? "warn" : "ok"}">${clickRate}% clics</span>
+    <span class="pill ${resilience > 80 ? "ok" : "warn"}">${resilience}% score</span>
+  `;
   const metrics = [
     ["Clics", clickRate, "danger"],
     ["Reportes", reportRate, "ok"],
@@ -1024,9 +1127,9 @@ function renderPhishingSimulator() {
   `).join("");
   byId("phishingTemplates").innerHTML = state.phishingTemplates.map((template) => `
     <div class="template-card">
-      <span>${template.channel}</span>
-      <strong>${template.name}</strong>
-      <small>${template.category} - Riesgo ${template.risk}</small>
+      <span>${escapeHtml(template.channel)}</span>
+      <strong>${escapeHtml(template.name)}</strong>
+      <small>${escapeHtml(template.category)} - Riesgo ${escapeHtml(template.risk)}</small>
     </div>
   `).join("");
   const departments = [...new Set(activeEmployees().map((employee) => employee.area))];
@@ -1036,13 +1139,13 @@ function renderPhishingSimulator() {
     const clicked = deptCampaigns.reduce((sum, campaign) => sum + campaign.clicked, 0);
     const reported = deptCampaigns.reduce((sum, campaign) => sum + campaign.reported, 0);
     const score = sent ? Math.max(0, Math.min(100, 100 - Math.round((clicked / sent) * 100) + Math.round((reported / sent) * 35))) : 86;
-    return `<div class="score-row"><strong>${department}</strong><span>${score}</span><div class="bar"><i class="${score > 80 ? "ok" : "warn"}" style="width:${score}%"></i></div></div>`;
+    return `<div class="score-row"><strong>${escapeHtml(department)}</strong><span>${score}</span><div class="bar"><i class="${score > 80 ? "ok" : "warn"}" style="width:${score}%"></i></div></div>`;
   }).join("");
   const latest = campaigns[0];
   byId("monthlySecurityReport").innerHTML = latest ? `
     <div class="report-card">
-      <strong>${latest.name}</strong>
-      <span>${latest.channel} - ${latest.template} - ${latest.department} - ${latest.status || "Activa"}</span>
+      <strong>${escapeHtml(latest.name)}</strong>
+      <span>${escapeHtml(latest.channel)} - ${escapeHtml(latest.template)} - ${escapeHtml(latest.department)} - ${escapeHtml(latest.status || "Activa")}</span>
       <div class="report-stats">
         <div><strong>${latest.sent}</strong><span>enviados</span></div>
         <div><strong>${latest.clicked}</strong><span>clics</span></div>
@@ -1056,7 +1159,7 @@ function renderPhishingSimulator() {
 
 function renderAudit() {
   byId("auditList").innerHTML = state.audit.slice(0, 30).map((item) => `
-    <div class="row-card"><div><strong>${item.action}</strong><span>${item.detail} - ${item.user} (${item.role})</span></div><span>${formatDate(item.timestamp)} ${formatTime(item.timestamp)}</span></div>
+    <div class="row-card"><div><strong>${escapeHtml(item.action)}</strong><span>${escapeHtml(item.detail)} - ${escapeHtml(item.user)} (${escapeHtml(item.role)})</span></div><span>${formatDate(item.timestamp)} ${formatTime(item.timestamp)}</span></div>
   `).join("") || `<p>Sin movimientos de auditoria.</p>`;
 }
 
@@ -1076,6 +1179,7 @@ function render() {
   renderChat();
   renderWorkingNow();
   renderAlerts();
+  renderCommandCenter();
   renderSummary();
   renderExecutiveInsights();
   renderGeoMap();
