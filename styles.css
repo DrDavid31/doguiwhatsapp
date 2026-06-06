@@ -1,5 +1,5 @@
 :root {
-  --bg: #f4f6f3;
+  --bg: #eef3f0;
   --panel: #ffffff;
   --ink: #18211f;
   --muted: #66736d;
@@ -12,6 +12,7 @@
   --danger: #c3423f;
   --ok: #1f8f5f;
   --shadow: 0 14px 36px rgba(24, 33, 31, 0.08);
+  --shadow-strong: 0 22px 58px rgba(24, 33, 31, 0.14);
 }
 
 * {
@@ -22,8 +23,8 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    linear-gradient(135deg, rgba(18, 140, 126, 0.08), transparent 32%),
-    linear-gradient(315deg, rgba(245, 184, 65, 0.12), transparent 28%),
+    linear-gradient(135deg, rgba(18, 140, 126, 0.08), transparent 34%),
+    linear-gradient(315deg, rgba(245, 184, 65, 0.1), transparent 30%),
     var(--bg);
   color: var(--ink);
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
@@ -238,15 +239,28 @@ main {
 }
 
 .topbar {
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   margin-bottom: 22px;
-  padding: 20px;
+  padding: 22px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.82);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-strong);
   backdrop-filter: blur(10px);
+}
+
+.title-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar-status,
+.suite-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .demo-banner {
@@ -287,12 +301,104 @@ p {
 }
 
 h1 {
-  font-size: clamp(2rem, 4vw, 3.1rem);
+  font-size: clamp(2.1rem, 4vw, 3.2rem);
   letter-spacing: 0;
+  line-height: 1.04;
 }
 
 h2 {
   font-size: 1.15rem;
+}
+
+.command-center {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(420px, 1.35fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.command-hero,
+.command-kpis {
+  border: 1px solid rgba(18, 140, 126, 0.22);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+.command-hero {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 22px;
+  background:
+    linear-gradient(135deg, rgba(18, 140, 126, 0.12), rgba(109, 93, 252, 0.06)),
+    #fff;
+}
+
+.command-hero h2 {
+  font-size: clamp(1.7rem, 3vw, 2.35rem);
+}
+
+.command-narrative {
+  display: grid;
+  gap: 10px;
+}
+
+.command-narrative strong,
+.command-narrative span {
+  display: block;
+}
+
+.command-narrative span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.command-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+}
+
+.kpi-tile {
+  display: grid;
+  gap: 8px;
+  min-height: 132px;
+  padding: 18px;
+  border-right: 1px solid var(--line);
+}
+
+.kpi-tile:last-child {
+  border-right: 0;
+}
+
+.kpi-tile span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.kpi-tile strong {
+  font-size: clamp(1.65rem, 3vw, 2.4rem);
+  line-height: 1;
+}
+
+.kpi-tile small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.kpi-tile.ok {
+  background: linear-gradient(180deg, rgba(31, 143, 95, 0.1), transparent);
+}
+
+.kpi-tile.warn {
+  background: linear-gradient(180deg, rgba(245, 184, 65, 0.14), transparent);
+}
+
+.kpi-tile.danger {
+  background: linear-gradient(180deg, rgba(195, 66, 63, 0.12), transparent);
 }
 
 .grid.metrics {
@@ -386,6 +492,11 @@ h2 {
   font-weight: 700;
 }
 
+.status.danger,
+.pill.danger {
+  border-color: #ffc8c6;
+}
+
 .form,
 .employee-form {
   display: grid;
@@ -456,6 +567,10 @@ button {
 button:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 18px rgba(24, 33, 31, 0.1);
+}
+
+button:active {
+  transform: translateY(0);
 }
 
 .primary {
@@ -573,6 +688,12 @@ th {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfb;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.row-card:hover {
+  border-color: rgba(18, 140, 126, 0.28);
+  background: #ffffff;
 }
 
 .row-card strong,
@@ -925,11 +1046,17 @@ body[data-mode="demo"] .status::after {
   border-left: 5px solid var(--brand);
   border-radius: 8px;
   background: #fbfcfb;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
 .ticket-card.critical {
   border-left-color: var(--danger);
   background: #fffafa;
+}
+
+.ticket-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(18, 140, 126, 0.32);
 }
 
 .ticket-card span,
@@ -992,6 +1119,12 @@ body[data-mode="demo"] .status::after {
   background:
     linear-gradient(135deg, rgba(232, 111, 81, 0.08), transparent),
     #fbfcfb;
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.template-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(232, 111, 81, 0.28);
 }
 
 .template-card span {
@@ -1045,7 +1178,7 @@ body[data-mode="demo"] .status::after {
 
 .report-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
 }
 
@@ -1079,6 +1212,7 @@ body[data-mode="demo"] .status::after {
   .report-filters,
   .branch-form,
   .top-actions,
+  .command-center,
   .executive-grid,
   .demo-banner,
   .suite-grid,
@@ -1089,6 +1223,18 @@ body[data-mode="demo"] .status::after {
 
   .wide-panel {
     grid-column: 1 / -1;
+  }
+
+  .command-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kpi-tile:nth-child(2) {
+    border-right: 0;
+  }
+
+  .kpi-tile:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
   }
 }
 
@@ -1118,6 +1264,7 @@ body[data-mode="demo"] .status::after {
 
   .layout,
   .grid.metrics,
+  .command-center,
   .executive-grid,
   .demo-banner,
   .employee-form,
@@ -1132,6 +1279,34 @@ body[data-mode="demo"] .status::after {
   .branch-form,
   .top-actions {
     grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    align-items: start;
+  }
+
+  .top-actions {
+    grid-auto-flow: row;
+    width: 100%;
+  }
+
+  .top-actions select,
+  .top-actions button {
+    width: 100%;
+  }
+
+  .command-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .kpi-tile,
+  .kpi-tile:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .kpi-tile:last-child {
+    border-bottom: 0;
   }
 
   .row-card {
