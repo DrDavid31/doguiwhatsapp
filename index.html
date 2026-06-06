@@ -76,9 +76,13 @@
 
     <main>
       <header class="topbar">
-        <div>
+        <div class="title-stack">
           <p class="eyebrow" id="sessionLabel">Empresa Demo</p>
           <h1>Reloj checador por WhatsApp</h1>
+          <div class="topbar-status">
+            <span id="modePill" class="pill ok">Demo</span>
+            <span id="riskPill" class="pill ok">Riesgo bajo</span>
+          </div>
         </div>
         <div class="top-actions">
           <select id="companySelect"></select>
@@ -101,6 +105,15 @@
           <strong>Operacion y ciberseguridad</strong>
           <span>Geocercas, tickets, alertas internas, simulaciones y reportes operativos.</span>
         </div>
+      </section>
+
+      <section class="command-center">
+        <article class="command-hero">
+          <p class="eyebrow">DOGUI Command Center</p>
+          <h2>Operacion y seguridad en vivo</h2>
+          <div id="commandNarrative" class="command-narrative"></div>
+        </article>
+        <article id="commandKpis" class="command-kpis"></article>
       </section>
 
       <section id="tablero" class="grid metrics">
@@ -153,7 +166,7 @@
             <h2>DOGUI WhatsApp Security Assistant</h2>
             <p>Convierte WhatsApp en el canal oficial para reportar links, correos, archivos y fraudes.</p>
           </div>
-          <span class="status">SOC por WhatsApp</span>
+          <div id="securitySuiteStats" class="suite-actions"></div>
         </div>
         <div class="suite-grid">
           <article class="panel">
@@ -204,7 +217,7 @@
             <h2>DOGUI Phishing Simulator</h2>
             <p>Campanas por correo, WhatsApp o SMS con metricas, capacitacion y score mensual.</p>
           </div>
-          <span class="status">Metricas vivas</span>
+          <div id="phishingSuiteStats" class="suite-actions"></div>
         </div>
         <div class="suite-grid phishing-grid">
           <article class="panel">
