@@ -13,6 +13,8 @@ let integrationHealth = null;
 let backendSaveTimer = null;
 let pendingBackendPayload = "";
 const elementCache = new Map();
+const dayKeyCache = new Map();
+const timestampCache = new Map();
 const dateFormatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" });
 const timeFormatter = new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit" });
 
@@ -309,6 +311,10 @@ function phishingCampaignSeed(name, channel, template, department, sent, clicked
 async function createSecurityTicket(event) {
   event.preventDefault();
   const employee = employeeById(byId("securityEmployee").value) || activeEmployees()[0];
+  if (!employee) {
+    alert("Agrega un empleado activo antes de crear tickets.");
+    return;
+  }
   const type = byId("securityType").value;
   const detail = byId("securityDetail").value;
   const severity = byId("securitySeverity").value;
@@ -355,6 +361,11 @@ async function launchPhishingCampaign(event) {
   event.preventDefault();
   const department = byId("campaignDepartment").value;
   const template = byId("campaignTemplate").value;
+  const selectedTargets = activeEmployees().filter((employee) => department === "Todos" || employee.area === department);
+  if (!selectedTargets.length) {
+    alert("No hay empleados activos para esta campana.");
+    return;
+  }
   if (HAS_BACKEND) {
     const response = await apiFetch("/api/phishing/campaigns", {
       method: "POST",
@@ -373,8 +384,7 @@ async function launchPhishingCampaign(event) {
     await hydrateFromBackend();
     return;
   }
-  const employees = activeEmployees().filter((employee) => department === "Todos" || employee.area === department);
-  const sent = Math.max(8, employees.length * 12);
+  const sent = Math.max(8, selectedTargets.length * 12);
   const riskBoost = template.toLowerCase().includes("sat") || template.toLowerCase().includes("banco") ? 0.34 : 0.24;
   const clicked = Math.max(1, Math.round(sent * riskBoost));
   const reported = Math.max(1, Math.round(sent * 0.42));
@@ -447,6 +457,24 @@ function clamp(value, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
 }
 
+function dayKey(value) {
+  const key = value instanceof Date ? value.toISOString() : String(value || "");
+  if (!dayKeyCache.has(key)) {
+    if (dayKeyCache.size > 2500) dayKeyCache.clear();
+    dayKeyCache.set(key, new Date(value).toDateString());
+  }
+  return dayKeyCache.get(key);
+}
+
+function timestampMs(value) {
+  const key = String(value || "");
+  if (!timestampCache.has(key)) {
+    if (timestampCache.size > 2500) timestampCache.clear();
+    timestampCache.set(key, new Date(value).getTime());
+  }
+  return timestampCache.get(key);
+}
+
 function minutesFromTime(value) {
   const [hours, minutes] = value.split(":").map(Number);
   return hours * 60 + minutes;
@@ -467,7 +495,13 @@ function normalizePhone(value) {
 }
 
 function branchById(id) {
-  return state.branches.find((branch) => branch.id === id) || state.branches[0];
+  return state.branches.find((branch) => branch.id === id) || state.branches.find((branch) => branch.companyId === state.selectedCompanyId) || state.branches[0] || {
+    id: "br-fallback",
+    companyId: state.selectedCompanyId || "co-demo",
+    name: "Sucursal sin configurar",
+    lat: 0,
+    lng: 0
+  };
 }
 
 function employeeById(id) {
@@ -489,16 +523,16 @@ function distanceMeters(aLat, aLng, bLat, bLng) {
 }
 
 function recordsForDay(employeeId, date = new Date()) {
-  const day = date.toDateString();
-  return state.records.filter((record) => record.employeeId === employeeId && new Date(record.timestamp).toDateString() === day);
+  const day = dayKey(date);
+  return state.records.filter((record) => record.employeeId === employeeId && dayKey(record.timestamp) === day);
 }
 
 function recordsForReport() {
-  const from = new Date(`${state.report.from}T00:00:00`);
-  const to = new Date(`${state.report.to}T23:59:59`);
+  const from = timestampMs(`${state.report.from}T00:00:00`);
+  const to = timestampMs(`${state.report.to}T23:59:59`);
   return state.records.filter((record) => {
     const employee = employeeById(record.employeeId);
-    const stamp = new Date(record.timestamp);
+    const stamp = timestampMs(record.timestamp);
     const areaOk = state.report.area === "Todas" || employee?.area === state.report.area;
     return stamp >= from && stamp <= to && areaOk && record.branchId === state.selectedBranchId;
   });
@@ -518,7 +552,7 @@ function classifyEvent(message) {
 }
 
 function currentWorkState(employeeId) {
-  const last = recordsForDay(employeeId).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+  const last = recordsForDay(employeeId).sort((a, b) => timestampMs(b.timestamp) - timestampMs(a.timestamp))[0];
   if (!last) return "Ausente";
   if (last.event === "entrada" || last.event === "regreso") return "En turno";
   if (last.event === "descanso") return "En descanso";
@@ -530,13 +564,13 @@ function calculateWorkedHours(employeeId, date = new Date()) {
   let openEntry = null;
   let totalMs = 0;
   records.forEach((record) => {
-    if (record.event === "entrada" || record.event === "regreso") openEntry = new Date(record.timestamp);
+    if (record.event === "entrada" || record.event === "regreso") openEntry = timestampMs(record.timestamp);
     if ((record.event === "salida" || record.event === "descanso") && openEntry) {
-      totalMs += new Date(record.timestamp) - openEntry;
+      totalMs += timestampMs(record.timestamp) - openEntry;
       openEntry = null;
     }
   });
-  if (openEntry && new Date().toDateString() === date.toDateString()) totalMs += now() - openEntry;
+  if (openEntry && dayKey(new Date()) === dayKey(date)) totalMs += Date.now() - openEntry;
   return Math.max(0, totalMs / 1000 / 60 / 60);
 }
 
@@ -559,7 +593,7 @@ function processMessage(employeeId, message, location, lat, lng, evidence, incom
   const branch = branchById(employee.branchId);
   const hasGps = Number.isFinite(lat) && Number.isFinite(lng);
   const distance = hasGps ? distanceMeters(lat, lng, branch.lat, branch.lng) : null;
-  const duplicate = recordsForDay(employee.id).some((record) => record.event === event && Math.abs(new Date(timestamp) - new Date(record.timestamp)) < 2 * 60 * 1000);
+  const duplicate = recordsForDay(employee.id).some((record) => record.event === event && Math.abs(timestampMs(timestamp) - timestampMs(record.timestamp)) < 2 * 60 * 1000);
   let status = "Registrado";
   const flags = [];
   const authorizedPhone = normalizePhone(employee.phone);
@@ -632,9 +666,9 @@ function refreshAlerts() {
     if (!records.some((record) => record.event === "entrada") && current > start + state.policy.tolerance) {
       addAlert("Ausencia", employee, "No registra entrada despues de la tolerancia.", "danger");
     }
-    const last = records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+    const last = records.sort((a, b) => timestampMs(b.timestamp) - timestampMs(a.timestamp))[0];
     if (workState === "En turno" && last) {
-      const hoursOpen = (now() - new Date(last.timestamp)) / 1000 / 60 / 60;
+      const hoursOpen = (Date.now() - timestampMs(last.timestamp)) / 1000 / 60 / 60;
       if (hoursOpen > state.policy.forgottenExitHours) addAlert("Salida olvidada", employee, "Jornada abierta por demasiadas horas.", "warn");
     }
   });
@@ -647,7 +681,7 @@ function updateIssue(id, status) {
   issue.resolvedAt = now().toISOString();
   if (issue.type === "vacaciones" && status === "Aprobada") {
     const employee = employeeById(issue.employeeId);
-    employee.vacationDays = Math.max(0, employee.vacationDays - 1);
+    if (employee) employee.vacationDays = Math.max(0, employee.vacationDays - 1);
   }
   addAudit(`Incidencia ${status}`, `${issue.employeeName}: ${issue.type}`);
   saveState();
@@ -692,11 +726,12 @@ async function updateSecurityTicketStatus(id, status) {
 function saveEmployee(event) {
   event.preventDefault();
   const id = byId("employeeId").value;
+  const branchId = byId("employeeBranch").value || state.selectedBranchId || branchById().id;
   const payload = {
     name: byId("employeeName").value,
     phone: byId("employeePhone").value,
     area: byId("employeeArea").value,
-    branchId: byId("employeeBranch").value,
+    branchId,
     mode: byId("employeeMode").value,
     role: byId("employeeRole").value,
     start: byId("employeeStart").value,
@@ -706,7 +741,9 @@ function saveEmployee(event) {
   };
 
   if (id) {
-    Object.assign(employeeById(id), payload);
+    const existing = employeeById(id);
+    if (existing) Object.assign(existing, payload);
+    else state.employees.push({ id, ...payload });
     addAudit("Empleado editado", payload.name);
   } else {
     state.employees.push({ id: makeId(), ...payload });
@@ -720,6 +757,7 @@ function saveEmployee(event) {
 
 function editEmployee(id) {
   const employee = employeeById(id);
+  if (!employee) return;
   byId("employeeId").value = employee.id;
   byId("employeeName").value = employee.name;
   byId("employeePhone").value = employee.phone;
@@ -734,6 +772,7 @@ function editEmployee(id) {
 
 function deactivateEmployee(id) {
   const employee = employeeById(id);
+  if (!employee) return;
   employee.active = false;
   addAudit("Empleado dado de baja", employee.name);
   saveState();
@@ -761,8 +800,8 @@ function scoreClass(score) {
 
 function getDashboardMetrics() {
   const employees = activeEmployees();
-  const today = new Date().toDateString();
-  const todayRecords = state.records.filter((record) => record.branchId === state.selectedBranchId && new Date(record.timestamp).toDateString() === today);
+  const today = dayKey(new Date());
+  const todayRecords = state.records.filter((record) => record.branchId === state.selectedBranchId && dayKey(record.timestamp) === today);
   const entries = todayRecords.filter((record) => record.event === "entrada").length;
   const late = todayRecords.filter((record) => record.status === "Retardo").length;
   const evidence = todayRecords.filter((record) => record.evidence).length;
@@ -840,7 +879,13 @@ function renderCommandCenter() {
 function renderSelectors() {
   byId("companySelect").innerHTML = state.companies.map((company) => `<option value="${escapeHtml(company.id)}">${escapeHtml(company.name)}</option>`).join("");
   byId("companySelect").value = state.selectedCompanyId;
-  const branchOptions = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId).map((branch) => `<option value="${escapeHtml(branch.id)}">${escapeHtml(branch.name)}</option>`).join("");
+  const branches = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId);
+  if (!branches.some((branch) => branch.id === state.selectedBranchId)) {
+    state.selectedBranchId = branches[0]?.id || state.branches[0]?.id || "";
+  }
+  const branchOptions = branches.length
+    ? branches.map((branch) => `<option value="${escapeHtml(branch.id)}">${escapeHtml(branch.name)}</option>`).join("")
+    : `<option value="">Sin sucursales</option>`;
   byId("branchSelect").innerHTML = branchOptions;
   byId("branchSelect").value = state.selectedBranchId;
   byId("employeeBranch").innerHTML = branchOptions;
@@ -967,7 +1012,8 @@ function renderSummary() {
     </div>
   `).join("");
   byId("metricWorking").textContent = rows.filter((row) => currentWorkState(row.employee.id) === "En turno").length;
-  byId("metricLate").textContent = state.records.filter((record) => record.status === "Retardo" && new Date(record.timestamp).toDateString() === new Date().toDateString()).length;
+  const today = dayKey(new Date());
+  byId("metricLate").textContent = state.records.filter((record) => record.status === "Retardo" && dayKey(record.timestamp) === today).length;
   byId("metricOvertime").textContent = rows.reduce((total, row) => total + row.overtime, 0).toFixed(1);
   byId("metricOpenIssues").textContent = state.issues.filter((issue) => issue.status === "Pendiente").length;
   byId("metricAlerts").textContent = state.alerts.filter((alert) => alert.status === "Abierta").length;
@@ -1023,7 +1069,7 @@ function renderCalendar() {
   const days = Array.from({ length: 30 }, (_, index) => {
     const day = new Date(date);
     day.setDate(date.getDate() + index);
-    const dayRecords = state.records.filter((record) => new Date(record.timestamp).toDateString() === day.toDateString() && record.branchId === state.selectedBranchId);
+    const dayRecords = state.records.filter((record) => dayKey(record.timestamp) === dayKey(day) && record.branchId === state.selectedBranchId);
     const late = dayRecords.some((record) => record.status === "Retardo");
     const cls = dayRecords.length ? (late ? "warn" : "ok") : "";
     return `<div class="day ${cls}"><strong>${day.getDate()}</strong><span>${dayRecords.length} reg.</span></div>`;
@@ -1289,7 +1335,13 @@ byId("policyForm").addEventListener("submit", (event) => {
 
 byId("branchForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  state.branches.push({ id: makeId(), companyId: state.selectedCompanyId, name: byId("branchName").value, lat: Number(byId("branchLat").value), lng: Number(byId("branchLng").value) });
+  const lat = Number(byId("branchLat").value);
+  const lng = Number(byId("branchLng").value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    alert("Captura coordenadas validas para la sucursal.");
+    return;
+  }
+  state.branches.push({ id: makeId(), companyId: state.selectedCompanyId, name: byId("branchName").value, lat, lng });
   addAudit("Sucursal agregada", byId("branchName").value);
   event.target.reset();
   saveState();
@@ -1298,14 +1350,16 @@ byId("branchForm").addEventListener("submit", (event) => {
 
 byId("reportFilters").addEventListener("submit", (event) => {
   event.preventDefault();
-  state.report = { from: byId("reportFrom").value, to: byId("reportTo").value, area: byId("reportArea").value };
+  const from = byId("reportFrom").value || todayIso();
+  const to = byId("reportTo").value || from;
+  state.report = { from, to, area: byId("reportArea").value || "Todas" };
   saveState();
   render();
 });
 
 byId("companySelect").addEventListener("change", () => {
   state.selectedCompanyId = byId("companySelect").value;
-  state.selectedBranchId = state.branches.find((branch) => branch.companyId === state.selectedCompanyId).id;
+  state.selectedBranchId = state.branches.find((branch) => branch.companyId === state.selectedCompanyId)?.id || state.branches[0]?.id || "";
   saveState();
   render();
 });
