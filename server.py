@@ -138,9 +138,12 @@ def verify_password(password, salt, expected_hash):
 
 
 def connect():
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=10)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA busy_timeout = 5000")
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA synchronous = NORMAL")
     return con
 
 
@@ -387,6 +390,7 @@ def init_db():
             """
         )
         ensure_webhook_event_columns(con)
+        ensure_indexes(con)
         migrate_legacy_state(con)
         seed_phishing_templates(con)
         migrate_product_meta(con)
@@ -409,6 +413,28 @@ def ensure_webhook_event_columns(con):
         if name not in columns:
             con.execute(f"ALTER TABLE whatsapp_events ADD COLUMN {name} {definition}")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_events_wa_message_id ON whatsapp_events(wa_message_id)")
+
+
+def ensure_indexes(con):
+    con.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_branches_company_active ON branches(company_id, active);
+        CREATE INDEX IF NOT EXISTS idx_employees_company_branch_active ON employees(company_id, branch_id, active);
+        CREATE INDEX IF NOT EXISTS idx_employees_phone_normalized ON employees(phone_normalized);
+        CREATE INDEX IF NOT EXISTS idx_records_branch_timestamp ON records(branch_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_records_employee_timestamp ON records(employee_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_issues_status_timestamp ON issues(status, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_alerts_status_timestamp ON alerts(status, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON chat(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_security_tickets_company_status_created ON security_tickets(company_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_security_alerts_status_created ON security_alerts(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_phishing_campaigns_company_created ON phishing_campaigns(company_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_phishing_targets_campaign ON phishing_targets(campaign_id);
+        CREATE INDEX IF NOT EXISTS idx_phishing_targets_tokens ON phishing_targets(campaign_id, click_token, report_token, training_token);
+        CREATE INDEX IF NOT EXISTS idx_phishing_events_campaign_created ON phishing_events(campaign_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_training_assignments_campaign_employee ON training_assignments(campaign_id, employee_id);
+        """
+    )
 
 
 def migrate_legacy_state(con):
@@ -592,7 +618,24 @@ def seed_auth(con):
 
 def import_state(con, state, replace=False):
     if replace:
-        for table in ["media_attachments", "chat", "audit", "alerts", "issues", "records", "employees", "branches", "policies"]:
+        for table in [
+            "training_assignments",
+            "phishing_events",
+            "phishing_targets",
+            "phishing_campaigns",
+            "security_evidence",
+            "security_alerts",
+            "security_tickets",
+            "media_attachments",
+            "chat",
+            "audit",
+            "alerts",
+            "issues",
+            "records",
+            "employees",
+            "branches",
+            "policies",
+        ]:
             con.execute(f"DELETE FROM {table}")
 
     for company in state.get("companies", DEFAULT_STATE["companies"]):
@@ -1099,6 +1142,8 @@ def build_state(con):
 def save_state(state):
     with connect() as con:
         import_state(con, state, replace=True)
+        seed_phishing_templates(con)
+        migrate_product_meta(con)
 
 
 def classify_event(message):
@@ -1730,9 +1775,22 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def read_json(self):
+        self._json_error = False
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length)
-        return raw, json.loads(raw.decode("utf-8") or "{}")
+        if not raw:
+            return raw, {}
+        try:
+            return raw, json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json_error = True
+            return raw, {}
+
+    def reject_invalid_json(self):
+        if getattr(self, "_json_error", False):
+            self.send_json({"error": "invalid_json"}, 400)
+            return True
+        return False
 
     def session_token(self):
         parsed = cookies.SimpleCookie(self.headers.get("Cookie", ""))
@@ -1832,7 +1890,12 @@ class Handler(SimpleHTTPRequestHandler):
     def do_PUT(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/state":
+            user = self.require_user()
+            if not user:
+                return
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             save_state(payload)
             return self.send_json({"ok": True})
         return self.send_json({"error": "not found"}, 404)
@@ -1841,6 +1904,8 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/login":
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             with connect() as con:
                 user = con.execute("SELECT * FROM users WHERE email = ? AND active = 1", (payload.get("email", ""),)).fetchone()
                 if not user or not verify_password(payload.get("password", ""), user["password_salt"], user["password_hash"]):
@@ -1858,7 +1923,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True}, extra_headers={"Set-Cookie": "checador_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"})
 
         if parsed.path == "/api/state":
+            user = self.require_user()
+            if not user:
+                return
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             save_state(payload)
             return self.send_json({"ok": True})
 
@@ -1867,6 +1937,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not user:
                 return
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             with connect() as con:
                 employee_id = upsert_employee(con, payload, user["company_id"])
                 add_audit(con, "Empleado guardado", payload.get("name", employee_id), user["name"], user["role"])
@@ -1877,6 +1949,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not user:
                 return
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             with connect() as con:
                 employee = con.execute("SELECT * FROM employees WHERE id = ? AND company_id = ? AND active = 1", (payload.get("employeeId"), user["company_id"])).fetchone()
                 if not employee:
@@ -1898,6 +1972,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             ticket_id = parsed.path.split("/")[4]
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             status = payload.get("status", "En revision")
             closed_at = utc_now() if status == "Cerrado" else None
             with connect() as con:
@@ -1916,6 +1992,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not user:
                 return
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             with connect() as con:
                 campaign = create_phishing_campaign(con, payload, user["company_id"])
                 if payload.get("launchNow"):
@@ -1941,6 +2019,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             issue_id = parsed.path.split("/")[3]
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             with connect() as con:
                 con.execute("UPDATE issues SET status = ?, resolved_at = ? WHERE id = ?", (payload.get("status", "Pendiente"), utc_now(), issue_id))
                 add_audit(con, "Incidencia actualizada", issue_id, user["name"], user["role"])
@@ -1948,6 +2028,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/webhooks/whatsapp":
             raw, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             if not verify_meta_signature(self.headers, raw):
                 return self.send_json({"error": "invalid signature"}, 403)
             results = [
@@ -1958,6 +2040,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/simulate-whatsapp":
             _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
             raw = {
                 "id": payload.get("id", make_id("sim")),
                 "from": payload.get("from", ""),
@@ -1988,6 +2072,18 @@ class Handler(SimpleHTTPRequestHandler):
 
 def upsert_employee(con, payload, company_id):
     employee_id = payload.get("id") or make_id("emp")
+    branch_id = payload.get("branchId") or get_meta(con, "selected_branch_id", "")
+    if not branch_id or not con.execute("SELECT 1 FROM branches WHERE id = ? AND company_id = ?", (branch_id, company_id)).fetchone():
+        row = con.execute("SELECT id FROM branches WHERE company_id = ? AND active = 1 ORDER BY name LIMIT 1", (company_id,)).fetchone()
+        if row:
+            branch_id = row["id"]
+        else:
+            branch_id = f"br-default-{company_id}"
+            con.execute(
+                "INSERT OR IGNORE INTO branches (id, company_id, name, lat, lng, active) VALUES (?, ?, 'Sucursal principal', 0, 0, 1)",
+                (branch_id, company_id),
+            )
+    name = (payload.get("name") or "Empleado sin nombre").strip() or "Empleado sin nombre"
     con.execute(
         """
         INSERT INTO employees
@@ -2009,8 +2105,8 @@ def upsert_employee(con, payload, company_id):
         (
             employee_id,
             company_id,
-            payload.get("branchId"),
-            payload.get("name"),
+            branch_id,
+            name,
             payload.get("phone", ""),
             normalize_phone(payload.get("phone")),
             payload.get("area", "General"),
