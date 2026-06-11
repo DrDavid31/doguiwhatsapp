@@ -70,7 +70,15 @@ function employeeSeed(name, phone, area, branchId, mode, role, start, end, vacat
 
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY) || oldKeys.map((key) => localStorage.getItem(key)).find(Boolean);
-  return saved ? JSON.parse(saved) : seed;
+  if (!saved) return seed;
+  try {
+    return JSON.parse(saved);
+  } catch (error) {
+    console.warn("Estado local corrupto, reiniciando demo", error);
+    localStorage.removeItem(STORAGE_KEY);
+    oldKeys.forEach((key) => localStorage.removeItem(key));
+    return seed;
+  }
 }
 
 function migrateState(raw) {
@@ -79,7 +87,7 @@ function migrateState(raw) {
   merged.branches = raw.branches || seed.branches;
   merged.policy = { ...defaultPolicy, ...(raw.policy || {}) };
   merged.selectedCompanyId = raw.selectedCompanyId || "co-demo";
-  merged.selectedBranchId = raw.selectedBranchId || merged.branches[0].id;
+  merged.selectedBranchId = raw.selectedBranchId || merged.branches[0]?.id || "";
   merged.report = { from: todayIso(), to: todayIso(), area: "Todas", ...(raw.report || {}) };
   merged.alerts = raw.alerts || [];
   merged.audit = raw.audit || [];
@@ -316,8 +324,12 @@ async function createSecurityTicket(event) {
     return;
   }
   const type = byId("securityType").value;
-  const detail = byId("securityDetail").value;
+  const detail = byId("securityDetail").value.trim();
   const severity = byId("securitySeverity").value;
+  if (!detail) {
+    alert("Describe el incidente para crear el ticket.");
+    return;
+  }
   if (HAS_BACKEND) {
     const response = await apiFetch("/api/security/tickets", {
       method: "POST",
@@ -333,7 +345,7 @@ async function createSecurityTicket(event) {
     byId("securityAutoResponse").innerHTML = `<strong>Respuesta automatica</strong><span>${escapeHtml(payload.ticket.response)}</span>`;
     return;
   }
-  const ticket = securityTicketSeed(employee, type, byId("securityDetail").value, byId("securitySeverity").value);
+  const ticket = securityTicketSeed(employee, type, detail, severity);
   state.securityTickets.unshift(ticket);
   state.securityAlerts.unshift({
     id: makeId(),
@@ -361,6 +373,7 @@ async function launchPhishingCampaign(event) {
   event.preventDefault();
   const department = byId("campaignDepartment").value;
   const template = byId("campaignTemplate").value;
+  const campaignName = byId("campaignName").value.trim() || `Campana DOGUI ${todayIso()}`;
   const selectedTargets = activeEmployees().filter((employee) => department === "Todos" || employee.area === department);
   if (!selectedTargets.length) {
     alert("No hay empleados activos para esta campana.");
@@ -370,7 +383,7 @@ async function launchPhishingCampaign(event) {
     const response = await apiFetch("/api/phishing/campaigns", {
       method: "POST",
       body: {
-        name: byId("campaignName").value,
+        name: campaignName,
         channel: byId("campaignChannel").value,
         template,
         department,
@@ -390,9 +403,9 @@ async function launchPhishingCampaign(event) {
   const reported = Math.max(1, Math.round(sent * 0.42));
   const trained = Math.max(reported, Math.round(sent * 0.78));
   state.phishingCampaigns.unshift(
-    phishingCampaignSeed(byId("campaignName").value, byId("campaignChannel").value, template, department, sent, clicked, reported, trained)
+    phishingCampaignSeed(campaignName, byId("campaignChannel").value, template, department, sent, clicked, reported, trained)
   );
-  addAudit("Campana phishing simulada", `${byId("campaignName").value} - ${department}`);
+  addAudit("Campana phishing simulada", `${campaignName} - ${department}`);
   saveState();
   render();
 }
@@ -435,12 +448,17 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function validDate(value, fallback = new Date()) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : fallback;
+}
+
 function formatDate(dateValue) {
-  return dateFormatter.format(new Date(dateValue));
+  return dateFormatter.format(validDate(dateValue));
 }
 
 function formatTime(dateValue) {
-  return timeFormatter.format(new Date(dateValue));
+  return timeFormatter.format(validDate(dateValue));
 }
 
 function escapeHtml(value) {
@@ -453,15 +471,33 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
+
 function clamp(value, min = 0, max = 100) {
-  return Math.max(min, Math.min(max, value));
+  const numeric = Number(value);
+  return Math.max(min, Math.min(max, Number.isFinite(numeric) ? numeric : min));
+}
+
+function percent(value) {
+  return Math.round(clamp(value));
+}
+
+function emptyState(message) {
+  return `<p class="empty-state">${escapeHtml(message)}</p>`;
+}
+
+function branchCoordinate(branch, field) {
+  const value = Number(branch?.[field]);
+  return Number.isFinite(value) ? value : 0;
 }
 
 function dayKey(value) {
   const key = value instanceof Date ? value.toISOString() : String(value || "");
   if (!dayKeyCache.has(key)) {
     if (dayKeyCache.size > 2500) dayKeyCache.clear();
-    dayKeyCache.set(key, new Date(value).toDateString());
+    dayKeyCache.set(key, validDate(value, new Date(0)).toDateString());
   }
   return dayKeyCache.get(key);
 }
@@ -470,24 +506,29 @@ function timestampMs(value) {
   const key = String(value || "");
   if (!timestampCache.has(key)) {
     if (timestampCache.size > 2500) timestampCache.clear();
-    timestampCache.set(key, new Date(value).getTime());
+    timestampCache.set(key, validDate(value, new Date(0)).getTime());
   }
   return timestampCache.get(key);
 }
 
 function minutesFromTime(value) {
-  const [hours, minutes] = value.split(":").map(Number);
-  return hours * 60 + minutes;
+  const [hours, minutes] = String(value || "00:00").split(":").map(Number);
+  return (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0);
 }
 
 function minutesFromDate(dateValue) {
-  const date = new Date(dateValue);
+  const date = validDate(dateValue);
   return date.getHours() * 60 + date.getMinutes();
 }
 
 function readCoordinate(id) {
   const value = byId(id).value.trim();
   return value === "" ? NaN : Number(value);
+}
+
+function readNumber(id, fallback, min = 0) {
+  const value = Number(byId(id).value);
+  return Number.isFinite(value) ? Math.max(min, value) : fallback;
 }
 
 function normalizePhone(value) {
@@ -592,7 +633,9 @@ function processMessage(employeeId, message, location, lat, lng, evidence, incom
   const timestamp = now().toISOString();
   const branch = branchById(employee.branchId);
   const hasGps = Number.isFinite(lat) && Number.isFinite(lng);
-  const distance = hasGps ? distanceMeters(lat, lng, branch.lat, branch.lng) : null;
+  const branchLat = branchCoordinate(branch, "lat");
+  const branchLng = branchCoordinate(branch, "lng");
+  const distance = hasGps ? distanceMeters(lat, lng, branchLat, branchLng) : null;
   const duplicate = recordsForDay(employee.id).some((record) => record.event === event && Math.abs(timestampMs(timestamp) - timestampMs(record.timestamp)) < 2 * 60 * 1000);
   let status = "Registrado";
   const flags = [];
@@ -728,17 +771,22 @@ function saveEmployee(event) {
   const id = byId("employeeId").value;
   const branchId = byId("employeeBranch").value || state.selectedBranchId || branchById().id;
   const payload = {
-    name: byId("employeeName").value,
-    phone: byId("employeePhone").value,
-    area: byId("employeeArea").value,
+    name: byId("employeeName").value.trim() || "Empleado sin nombre",
+    phone: byId("employeePhone").value.trim(),
+    area: byId("employeeArea").value.trim() || "General",
     branchId,
     mode: byId("employeeMode").value,
     role: byId("employeeRole").value,
-    start: byId("employeeStart").value,
-    end: byId("employeeEnd").value,
-    vacationDays: Number(byId("employeeVacation").value || 0),
+    start: byId("employeeStart").value || "09:00",
+    end: byId("employeeEnd").value || "18:00",
+    vacationDays: readNumber("employeeVacation", 0, 0),
     active: true
   };
+
+  if (!payload.phone) {
+    alert("Captura el telefono autorizado del empleado.");
+    return;
+  }
 
   if (id) {
     const existing = employeeById(id);
@@ -877,21 +925,27 @@ function renderCommandCenter() {
 }
 
 function renderSelectors() {
-  byId("companySelect").innerHTML = state.companies.map((company) => `<option value="${escapeHtml(company.id)}">${escapeHtml(company.name)}</option>`).join("");
+  byId("companySelect").innerHTML = state.companies.map((company) => `<option value="${escapeAttr(company.id)}">${escapeHtml(company.name)}</option>`).join("");
   byId("companySelect").value = state.selectedCompanyId;
   const branches = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId);
   if (!branches.some((branch) => branch.id === state.selectedBranchId)) {
     state.selectedBranchId = branches[0]?.id || state.branches[0]?.id || "";
   }
   const branchOptions = branches.length
-    ? branches.map((branch) => `<option value="${escapeHtml(branch.id)}">${escapeHtml(branch.name)}</option>`).join("")
+    ? branches.map((branch) => `<option value="${escapeAttr(branch.id)}">${escapeHtml(branch.name)}</option>`).join("")
     : `<option value="">Sin sucursales</option>`;
   byId("branchSelect").innerHTML = branchOptions;
   byId("branchSelect").value = state.selectedBranchId;
   byId("employeeBranch").innerHTML = branchOptions;
   byId("employeeBranch").value = state.selectedBranchId;
-  byId("employeeSelect").innerHTML = activeEmployees().map((employee) => `<option value="${escapeHtml(employee.id)}">${escapeHtml(employee.name)} - ${escapeHtml(employee.phone)}</option>`).join("");
-  byId("securityEmployee").innerHTML = activeEmployees().map((employee) => `<option value="${escapeHtml(employee.id)}">${escapeHtml(employee.name)} - ${escapeHtml(employee.area)}</option>`).join("");
+  const employees = activeEmployees();
+  const employeeOptions = employees.length
+    ? employees.map((employee) => `<option value="${escapeAttr(employee.id)}">${escapeHtml(employee.name)} - ${escapeHtml(employee.phone)}</option>`).join("")
+    : `<option value="">Sin empleados activos</option>`;
+  byId("employeeSelect").innerHTML = employeeOptions;
+  byId("securityEmployee").innerHTML = employees.length
+    ? employees.map((employee) => `<option value="${escapeAttr(employee.id)}">${escapeHtml(employee.name)} - ${escapeHtml(employee.area)}</option>`).join("")
+    : `<option value="">Sin empleados activos</option>`;
   const areas = ["Todas", ...new Set(state.employees.filter((employee) => employee.active).map((employee) => employee.area))];
   byId("reportArea").innerHTML = areas.map((area) => `<option>${escapeHtml(area)}</option>`).join("");
   byId("reportArea").value = state.report.area;
@@ -901,9 +955,9 @@ function renderSelectors() {
 }
 
 function renderEmployees() {
-  byId("employeeList").innerHTML = state.employees
-    .filter((employee) => employee.branchId === state.selectedBranchId)
-    .map((employee) => {
+  const employees = state.employees.filter((employee) => employee.branchId === state.selectedBranchId);
+  byId("employeeList").innerHTML = employees.length
+    ? employees.map((employee) => {
       const hours = calculateWorkedHours(employee.id).toFixed(1);
       const active = employee.active ? "Activo" : "Baja";
       return `
@@ -915,17 +969,18 @@ function renderEmployees() {
           <div class="row-actions">
             <span class="pill ${statusClass(active)}">${active}</span>
             <span class="pill ok">${hours} h hoy</span>
-            <button data-action="edit-employee" data-id="${employee.id}">Editar</button>
-            <button data-action="deactivate-employee" data-id="${employee.id}">Baja</button>
+            <button data-action="edit-employee" data-id="${escapeAttr(employee.id)}">Editar</button>
+            <button data-action="deactivate-employee" data-id="${escapeAttr(employee.id)}">Baja</button>
           </div>
         </div>
       `;
     })
-    .join("");
+    .join("")
+    : emptyState("Sin empleados en esta sucursal.");
 }
 
 function renderRecords() {
-  byId("recordsTable").innerHTML = state.records
+  const rows = state.records
     .filter((record) => record.branchId === state.selectedBranchId)
     .slice(0, 60)
     .map((record) => `
@@ -940,6 +995,7 @@ function renderRecords() {
       </tr>
     `)
     .join("");
+  byId("recordsTable").innerHTML = rows || `<tr><td colspan="7">Sin registros en esta sucursal.</td></tr>`;
 }
 
 function renderIssues() {
@@ -952,35 +1008,37 @@ function renderIssues() {
         </div>
         <div class="row-actions">
           <span class="pill ${statusClass(issue.status)}">${issue.status}</span>
-          <button data-action="approve-issue" data-id="${issue.id}">Aprobar</button>
-          <button data-action="reject-issue" data-id="${issue.id}">Rechazar</button>
+          <button data-action="approve-issue" data-id="${escapeAttr(issue.id)}">Aprobar</button>
+          <button data-action="reject-issue" data-id="${escapeAttr(issue.id)}">Rechazar</button>
         </div>
       </div>
     `).join("")
-    : `<p>Sin incidencias por revisar.</p>`;
+    : emptyState("Sin incidencias por revisar.");
 }
 
 function renderBalances() {
-  byId("balancesList").innerHTML = activeEmployees().map((employee) => `
+  const employees = activeEmployees();
+  byId("balancesList").innerHTML = employees.length ? employees.map((employee) => `
     <div class="row-card">
       <div><strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.area)} - ${escapeHtml(employee.phone)}</span></div>
       <span class="pill ok">${employee.vacationDays} dias disponibles</span>
     </div>
-  `).join("");
+  `).join("") : emptyState("Sin empleados activos en esta sucursal.");
 }
 
 function renderChat() {
-  byId("chatLog").innerHTML = state.chat.slice(0, 10).flatMap((item) => [
+  byId("chatLog").innerHTML = state.chat.length ? state.chat.slice(0, 10).flatMap((item) => [
     `<div class="bubble"><strong>${escapeHtml(item.employeeName)}</strong><br>${escapeHtml(item.message)}<small>${formatTime(item.timestamp)}</small></div>`,
     `<div class="bubble system">${escapeHtml(item.response)}<small>Bot RRHH</small></div>`
-  ]).join("");
+  ]).join("") : emptyState("Sin conversaciones recientes.");
 }
 
 function renderWorkingNow() {
-  byId("workingNowList").innerHTML = activeEmployees().map((employee) => {
+  const employees = activeEmployees();
+  byId("workingNowList").innerHTML = employees.length ? employees.map((employee) => {
     const workState = currentWorkState(employee.id);
     return `<div class="row-card"><div><strong>${escapeHtml(employee.name)}</strong><span>${escapeHtml(employee.area)} - ${escapeHtml(employee.start)}-${escapeHtml(employee.end)}</span></div><span class="pill ${statusClass(workState)}">${workState}</span></div>`;
-  }).join("");
+  }).join("") : emptyState("Sin empleados activos en esta sucursal.");
 }
 
 function renderAlerts() {
@@ -990,10 +1048,10 @@ function renderAlerts() {
     ? open.map((alert) => `
       <div class="row-card">
         <div><strong>${escapeHtml(alert.employeeName)} - ${escapeHtml(alert.type)}</strong><span>${escapeHtml(alert.detail)} - ${formatTime(alert.timestamp)}</span></div>
-        <div class="row-actions"><span class="pill ${alert.severity === "danger" ? "danger" : "warn"}">${alert.status}</span><button data-action="close-alert" data-id="${alert.id}">Cerrar</button></div>
+        <div class="row-actions"><span class="pill ${alert.severity === "danger" ? "danger" : "warn"}">${escapeHtml(alert.status)}</span><button data-action="close-alert" data-id="${escapeAttr(alert.id)}">Cerrar</button></div>
       </div>
     `).join("")
-    : `<p>Sin alertas activas.</p>`;
+    : emptyState("Sin alertas activas.");
 }
 
 function renderSummary() {
@@ -1005,12 +1063,12 @@ function renderSummary() {
     const overtime = Math.max(0, worked - state.policy.overtimeAfterHours);
     return { employee, late, worked, overtime, records: employeeRecords.length };
   });
-  byId("summaryList").innerHTML = rows.map((row) => `
+  byId("summaryList").innerHTML = rows.length ? rows.map((row) => `
     <div class="row-card">
       <div><strong>${escapeHtml(row.employee.name)}</strong><span>${row.records} registros - ${row.late} retardos - ${row.worked.toFixed(1)} h trabajadas - ${row.overtime.toFixed(1)} h extra</span></div>
       <span class="pill ${row.late ? "warn" : "ok"}">${escapeHtml(row.employee.area)}</span>
     </div>
-  `).join("");
+  `).join("") : emptyState("Sin empleados activos para resumir.");
   byId("metricWorking").textContent = rows.filter((row) => currentWorkState(row.employee.id) === "En turno").length;
   const today = dayKey(new Date());
   byId("metricLate").textContent = state.records.filter((record) => record.status === "Retardo" && dayKey(record.timestamp) === today).length;
@@ -1034,28 +1092,30 @@ function renderExecutiveInsights() {
         <strong>${label}</strong>
         <span>${value}%</span>
       </div>
-      <div class="bar"><i class="${kind}" style="width:${value}%"></i></div>
+      <div class="bar"><i class="${kind}" style="width:${percent(value)}%"></i></div>
     </div>
   `).join("");
 }
 
 function renderGeoMap() {
   const branch = branchById(state.selectedBranchId);
+  const branchLat = branchCoordinate(branch, "lat");
+  const branchLng = branchCoordinate(branch, "lng");
   const visibleRecords = state.records
     .filter((record) => record.branchId === state.selectedBranchId)
-    .filter((record) => record.lat || record.lng)
+    .filter((record) => Number.isFinite(Number(record.lat)) && Number.isFinite(Number(record.lng)))
     .slice(0, 5);
   const pins = visibleRecords.map((record, index) => {
-    const left = Math.max(12, Math.min(88, 50 + ((record.lng || branch.lng) - branch.lng) * 900 + index * 5));
-    const top = Math.max(16, Math.min(82, 50 - ((record.lat || branch.lat) - branch.lat) * 900 + index * 4));
+    const left = percent(Math.max(12, Math.min(88, 50 + (Number(record.lng) - branchLng) * 900 + index * 5)));
+    const top = percent(Math.max(16, Math.min(82, 50 - (Number(record.lat) - branchLat) * 900 + index * 4)));
     const kind = record.status === "Retardo" || record.suspicious ? "warn" : "ok";
-    return `<button class="map-pin ${kind}" style="left:${left}%;top:${top}%" title="${escapeHtml(record.employeeName)} - ${escapeHtml(record.status)}"></button>`;
+    return `<button class="map-pin ${kind}" style="left:${left}%;top:${top}%" title="${escapeAttr(`${record.employeeName} - ${record.status}`)}"></button>`;
   }).join("");
 
   byId("geoMap").innerHTML = `
     <div class="map-grid"></div>
     <div class="map-radius"></div>
-    <div class="map-branch"><strong>${escapeHtml(branch.name)}</strong><span>${branch.lat.toFixed(4)}, ${branch.lng.toFixed(4)}</span></div>
+    <div class="map-branch"><strong>${escapeHtml(branch.name)}</strong><span>${branchLat.toFixed(4)}, ${branchLng.toFixed(4)}</span></div>
     ${pins || `<button class="map-pin ok" style="left:52%;top:48%" title="Sucursal base"></button>`}
     <div class="map-legend">
       <span><i class="ok"></i> A tiempo</span>
@@ -1087,9 +1147,10 @@ function renderPolicy() {
 }
 
 function renderBranches() {
-  byId("branchList").innerHTML = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId).map((branch) => `
-    <div class="row-card"><div><strong>${escapeHtml(branch.name)}</strong><span>${branch.lat}, ${branch.lng} - radio ${state.policy.geofenceRadius} m</span></div><span class="pill ${branch.id === state.selectedBranchId ? "ok" : "warn"}">${branch.id === state.selectedBranchId ? "Actual" : "Disponible"}</span></div>
-  `).join("");
+  const branches = state.branches.filter((branch) => branch.companyId === state.selectedCompanyId);
+  byId("branchList").innerHTML = branches.length ? branches.map((branch) => `
+    <div class="row-card"><div><strong>${escapeHtml(branch.name)}</strong><span>${branchCoordinate(branch, "lat")}, ${branchCoordinate(branch, "lng")} - radio ${escapeHtml(state.policy.geofenceRadius)} m</span></div><span class="pill ${branch.id === state.selectedBranchId ? "ok" : "warn"}">${branch.id === state.selectedBranchId ? "Actual" : "Disponible"}</span></div>
+  `).join("") : emptyState("Sin sucursales configuradas.");
 }
 
 function renderIntegrations() {
@@ -1101,7 +1162,7 @@ function renderIntegrations() {
     <div class="row-card"><div><strong>Webhook WhatsApp</strong><span>/webhooks/whatsapp para asistencia, evidencias e incidentes.</span></div>${statusPill(Boolean(health.whatsappConfigured))}</div>
     <div class="row-card"><div><strong>SendGrid correo</strong><span>Campanas de phishing por email con tracking.</span></div>${statusPill(Boolean(health.sendgridConfigured))}</div>
     <div class="row-card"><div><strong>Twilio SMS</strong><span>Campanas por SMS y enlaces medibles.</span></div>${statusPill(Boolean(health.twilioConfigured))}</div>
-    <div class="row-card"><div><strong>Tracking publico</strong><span>${health.publicBaseUrl || "Configura PUBLIC_BASE_URL para links reales."}</span></div><span class="pill ok">Incluido</span></div>
+    <div class="row-card"><div><strong>Tracking publico</strong><span>${escapeHtml(health.publicBaseUrl || "Configura PUBLIC_BASE_URL para links reales.")}</span></div><span class="pill ok">Incluido</span></div>
     <div class="row-card"><div><strong>Validacion de telefono</strong><span>El empleado solo puede checar desde su numero registrado.</span></div><span class="pill ok">Incluido</span></div>
     <div class="row-card"><div><strong>Tickets y reportes</strong><span>Security Assistant y Phishing Simulator ya usan tablas propias.</span></div><span class="pill ok">Incluido</span></div>
   `;
@@ -1129,22 +1190,22 @@ function renderSecurityAssistant() {
         <p>${escapeHtml(ticket.detail)}</p>
       </div>
       <div>
-        <span class="pill ${ticket.severity === "Alta" ? "danger" : "warn"}">${ticket.severity}</span>
+        <span class="pill ${ticket.severity === "Alta" ? "danger" : "warn"}">${escapeHtml(ticket.severity)}</span>
         <small>${escapeHtml(ticket.employeeName)} - ${escapeHtml(ticket.department)}</small>
         <small>${escapeHtml(ticket.status)}</small>
         <div class="ticket-actions">
-          <button data-action="review-security" data-id="${ticket.id}">Revisar</button>
-          <button data-action="close-security" data-id="${ticket.id}">Cerrar</button>
+          <button data-action="review-security" data-id="${escapeAttr(ticket.id)}">Revisar</button>
+          <button data-action="close-security" data-id="${escapeAttr(ticket.id)}">Cerrar</button>
         </div>
       </div>
     </div>
-  `).join("") || `<p>Sin tickets de seguridad.</p>`;
+  `).join("") || emptyState("Sin tickets de seguridad.");
   byId("securityAlerts").innerHTML = (state.securityAlerts || []).slice(0, 6).map((alert) => `
     <div class="row-card">
       <div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div>
-      <span class="pill ${alert.severity === "Alta" ? "danger" : "warn"}">${alert.status}</span>
+      <span class="pill ${alert.severity === "Alta" ? "danger" : "warn"}">${escapeHtml(alert.status)}</span>
     </div>
-  `).join("") || `<p>Sin alertas internas.</p>`;
+  `).join("") || emptyState("Sin alertas internas.");
 }
 
 function renderPhishingSimulator() {
@@ -1168,7 +1229,7 @@ function renderPhishingSimulator() {
   byId("phishingMetrics").innerHTML = metrics.map(([label, value, kind]) => `
     <div class="insight-row">
       <div><strong>${label}</strong><span>${value}%</span></div>
-      <div class="bar"><i class="${kind}" style="width:${value}%"></i></div>
+      <div class="bar"><i class="${kind}" style="width:${percent(value)}%"></i></div>
     </div>
   `).join("");
   byId("phishingTemplates").innerHTML = state.phishingTemplates.map((template) => `
@@ -1177,42 +1238,43 @@ function renderPhishingSimulator() {
       <strong>${escapeHtml(template.name)}</strong>
       <small>${escapeHtml(template.category)} - Riesgo ${escapeHtml(template.risk)}</small>
     </div>
-  `).join("");
+  `).join("") || emptyState("Sin plantillas configuradas.");
   const departments = [...new Set(activeEmployees().map((employee) => employee.area))];
-  byId("departmentScores").innerHTML = departments.map((department) => {
+  byId("departmentScores").innerHTML = departments.length ? departments.map((department) => {
     const deptCampaigns = campaigns.filter((campaign) => campaign.department === department || campaign.department === "Todos");
     const sent = deptCampaigns.reduce((sum, campaign) => sum + campaign.sent, 0);
     const clicked = deptCampaigns.reduce((sum, campaign) => sum + campaign.clicked, 0);
     const reported = deptCampaigns.reduce((sum, campaign) => sum + campaign.reported, 0);
-    const score = sent ? Math.max(0, Math.min(100, 100 - Math.round((clicked / sent) * 100) + Math.round((reported / sent) * 35))) : 86;
+    const score = sent ? percent(100 - Math.round((clicked / sent) * 100) + Math.round((reported / sent) * 35)) : 86;
     return `<div class="score-row"><strong>${escapeHtml(department)}</strong><span>${score}</span><div class="bar"><i class="${score > 80 ? "ok" : "warn"}" style="width:${score}%"></i></div></div>`;
-  }).join("");
+  }).join("") : emptyState("Sin departamentos activos.");
   const latest = campaigns[0];
   byId("monthlySecurityReport").innerHTML = latest ? `
     <div class="report-card">
       <strong>${escapeHtml(latest.name)}</strong>
       <span>${escapeHtml(latest.channel)} - ${escapeHtml(latest.template)} - ${escapeHtml(latest.department)} - ${escapeHtml(latest.status || "Activa")}</span>
       <div class="report-stats">
-        <div><strong>${latest.sent}</strong><span>enviados</span></div>
-        <div><strong>${latest.clicked}</strong><span>clics</span></div>
-        <div><strong>${latest.reported}</strong><span>reportes</span></div>
-        <div><strong>${latest.trained}</strong><span>capacitados</span></div>
-        <div><strong>${latest.score || resilience}</strong><span>score</span></div>
+        <div><strong>${escapeHtml(latest.sent || 0)}</strong><span>enviados</span></div>
+        <div><strong>${escapeHtml(latest.clicked || 0)}</strong><span>clics</span></div>
+        <div><strong>${escapeHtml(latest.reported || 0)}</strong><span>reportes</span></div>
+        <div><strong>${escapeHtml(latest.trained || 0)}</strong><span>capacitados</span></div>
+        <div><strong>${escapeHtml(latest.score || resilience)}</strong><span>score</span></div>
       </div>
     </div>
-  ` : `<p>Sin campanas simuladas.</p>`;
+  ` : emptyState("Sin campanas simuladas.");
 }
 
 function renderAudit() {
   byId("auditList").innerHTML = state.audit.slice(0, 30).map((item) => `
     <div class="row-card"><div><strong>${escapeHtml(item.action)}</strong><span>${escapeHtml(item.detail)} - ${escapeHtml(item.user)} (${escapeHtml(item.role)})</span></div><span>${formatDate(item.timestamp)} ${formatTime(item.timestamp)}</span></div>
-  `).join("") || `<p>Sin movimientos de auditoria.</p>`;
+  `).join("") || emptyState("Sin movimientos de auditoria.");
 }
 
 function renderSession() {
   byId("loginScreen").classList.toggle("hidden", Boolean(session));
   const mode = DEMO_MODE ? "Demo GitHub Pages" : "Backend conectado";
-  byId("sessionLabel").textContent = session ? `${state.companies[0].name} - ${session.user} - ${session.role} - ${mode}` : `${state.companies[0].name} - ${mode}`;
+  const company = state.companies.find((item) => item.id === state.selectedCompanyId) || state.companies[0] || { name: "DOGUI" };
+  byId("sessionLabel").textContent = session ? `${company.name} - ${session.user} - ${session.role} - ${mode}` : `${company.name} - ${mode}`;
 }
 
 function render() {
@@ -1291,9 +1353,19 @@ byId("logoutButton").addEventListener("click", async () => {
 
 byId("messageForm").addEventListener("submit", (event) => {
   event.preventDefault();
+  const employeeId = byId("employeeSelect").value;
+  const message = byId("messageText").value.trim();
+  if (!employeeById(employeeId)) {
+    alert("Agrega o selecciona un empleado activo antes de procesar mensajes.");
+    return;
+  }
+  if (!message) {
+    alert("Escribe un mensaje de WhatsApp para procesarlo.");
+    return;
+  }
   processMessage(
-    byId("employeeSelect").value,
-    byId("messageText").value,
+    employeeId,
+    message,
     byId("locationText").value,
     readCoordinate("latInput"),
     readCoordinate("lngInput"),
@@ -1321,10 +1393,10 @@ byId("cancelEditEmployee").addEventListener("click", () => {
 byId("policyForm").addEventListener("submit", (event) => {
   event.preventDefault();
   state.policy = {
-    tolerance: Number(byId("policyTolerance").value),
-    forgottenExitHours: Number(byId("policyForgottenExit").value),
-    geofenceRadius: Number(byId("policyRadius").value),
-    overtimeAfterHours: Number(byId("policyOvertimeAfter").value),
+    tolerance: readNumber("policyTolerance", defaultPolicy.tolerance, 0),
+    forgottenExitHours: readNumber("policyForgottenExit", defaultPolicy.forgottenExitHours, 1),
+    geofenceRadius: readNumber("policyRadius", defaultPolicy.geofenceRadius, 50),
+    overtimeAfterHours: readNumber("policyOvertimeAfter", defaultPolicy.overtimeAfterHours, 1),
     requireGps: byId("policyRequireGps").checked,
     requireSelfie: byId("policyRequireSelfie").checked
   };
@@ -1335,14 +1407,19 @@ byId("policyForm").addEventListener("submit", (event) => {
 
 byId("branchForm").addEventListener("submit", (event) => {
   event.preventDefault();
+  const name = byId("branchName").value.trim();
   const lat = Number(byId("branchLat").value);
   const lng = Number(byId("branchLng").value);
+  if (!name) {
+    alert("Captura el nombre de la sucursal.");
+    return;
+  }
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     alert("Captura coordenadas validas para la sucursal.");
     return;
   }
-  state.branches.push({ id: makeId(), companyId: state.selectedCompanyId, name: byId("branchName").value, lat, lng });
-  addAudit("Sucursal agregada", byId("branchName").value);
+  state.branches.push({ id: makeId(), companyId: state.selectedCompanyId, name, lat, lng });
+  addAudit("Sucursal agregada", name);
   event.target.reset();
   saveState();
   render();
