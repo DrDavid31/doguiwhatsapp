@@ -1097,6 +1097,16 @@ body[data-mode="demo"] .status::after {
   font-size: 0.76rem;
 }
 
+.empty-state {
+  margin: 0;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .metric-bars,
 .score-list {
   display: grid;
