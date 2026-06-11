@@ -1414,7 +1414,20 @@ def create_phishing_campaign(con, payload, company_id):
     ).fetchone()
     if not template:
         template = con.execute("SELECT * FROM phishing_templates ORDER BY name LIMIT 1").fetchone()
+    if not template:
+        return None
     department = payload.get("department", "Todos")
+    target_emails = payload.get("targetEmails", {}) or {}
+    employees = con.execute(
+        """
+        SELECT * FROM employees
+        WHERE active = 1 AND company_id = ? AND (? = 'Todos' OR area = ?)
+        ORDER BY name
+        """,
+        (company_id, department, department),
+    ).fetchall()
+    if not employees:
+        return None
     campaign_id = make_id("camp")
     created_at = utc_now()
     con.execute(
@@ -1434,15 +1447,6 @@ def create_phishing_campaign(con, payload, company_id):
             created_at,
         ),
     )
-    target_emails = payload.get("targetEmails", {}) or {}
-    employees = con.execute(
-        """
-        SELECT * FROM employees
-        WHERE active = 1 AND company_id = ? AND (? = 'Todos' OR area = ?)
-        ORDER BY name
-        """,
-        (company_id, department, department),
-    ).fetchall()
     for employee in employees:
         con.execute(
             """
@@ -1561,6 +1565,8 @@ def launch_phishing_campaign(con, campaign_id, base_url):
         return None
     template = con.execute("SELECT * FROM phishing_templates WHERE id = ?", (campaign["template_id"],)).fetchone()
     targets = con.execute("SELECT * FROM phishing_targets WHERE campaign_id = ? ORDER BY employee_name", (campaign_id,)).fetchall()
+    if not template or not targets:
+        return {"campaign": get_phishing_campaign(con, campaign_id), "delivery": [], "empty": True}
     results = []
     launched_at = utc_now()
     for target in targets:
@@ -1977,10 +1983,12 @@ class Handler(SimpleHTTPRequestHandler):
             status = payload.get("status", "En revision")
             closed_at = utc_now() if status == "Cerrado" else None
             with connect() as con:
-                con.execute(
+                cursor = con.execute(
                     "UPDATE security_tickets SET status = ?, updated_at = ?, closed_at = ? WHERE id = ?",
                     (status, utc_now(), closed_at, ticket_id),
                 )
+                if cursor.rowcount == 0:
+                    return self.send_json({"error": "ticket_not_found"}, 404)
                 if status == "Cerrado":
                     con.execute("UPDATE security_alerts SET status = 'Cerrada' WHERE ticket_id = ?", (ticket_id,))
                 add_audit(con, "Ticket de seguridad actualizado", f"{ticket_id} -> {status}", user["name"], user["role"])
@@ -1996,8 +2004,12 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             with connect() as con:
                 campaign = create_phishing_campaign(con, payload, user["company_id"])
+                if not campaign:
+                    return self.send_json({"error": "empty_campaign"}, 400)
                 if payload.get("launchNow"):
                     launched = launch_phishing_campaign(con, campaign["id"], public_base_url(self.headers))
+                    if launched.get("empty"):
+                        return self.send_json({"error": "empty_campaign", **launched}, 400)
                     return self.send_json({"ok": True, **launched})
             return self.send_json({"ok": True, "campaign": campaign})
 
@@ -2010,6 +2022,8 @@ class Handler(SimpleHTTPRequestHandler):
                 launched = launch_phishing_campaign(con, campaign_id, public_base_url(self.headers))
                 if not launched:
                     return self.send_json({"error": "campaign_not_found"}, 404)
+                if launched.get("empty"):
+                    return self.send_json({"error": "empty_campaign", **launched}, 400)
                 add_audit(con, "Campana phishing lanzada desde panel", campaign_id, user["name"], user["role"])
             return self.send_json({"ok": True, **launched})
 
@@ -2022,7 +2036,9 @@ class Handler(SimpleHTTPRequestHandler):
             if self.reject_invalid_json():
                 return
             with connect() as con:
-                con.execute("UPDATE issues SET status = ?, resolved_at = ? WHERE id = ?", (payload.get("status", "Pendiente"), utc_now(), issue_id))
+                cursor = con.execute("UPDATE issues SET status = ?, resolved_at = ? WHERE id = ?", (payload.get("status", "Pendiente"), utc_now(), issue_id))
+                if cursor.rowcount == 0:
+                    return self.send_json({"error": "issue_not_found"}, 404)
                 add_audit(con, "Incidencia actualizada", issue_id, user["name"], user["role"])
             return self.send_json({"ok": True})
 
