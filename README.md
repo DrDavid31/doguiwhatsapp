@@ -6,6 +6,7 @@ Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se mues
 
 ## Modulos incluidos
 
+- DOGUI Joule: copiloto de IA inspirado en SAP Joule, con skills de consulta y accion sobre asistencia, seguridad y phishing, mas una capa opcional de lenguaje libre con Claude.
 - Vista ejecutiva para presentacion comercial en GitHub Pages.
 - Login visual con resumen de valor y simulacion de conversacion WhatsApp.
 - Panel de salud operativa con barras de cobertura, evidencia y riesgo.
@@ -168,6 +169,26 @@ El simulador puede enviar por:
 - Correo con SendGrid si `SENDGRID_API_KEY` existe y los targets tienen email.
 
 Si un proveedor no esta configurado, la campana corre en modo simulado: marca objetivos como enviados, crea URLs de tracking y conserva las metricas para presentacion.
+
+## DOGUI Joule (copiloto de IA)
+
+Inspirado en SAP Joule: un copiloto conversacional embebido, con "skills" que consultan y accionan sobre los datos reales del panel (no un chatbot generico). Se abre con el boton flotante (esquina inferior derecha) desde cualquier vista.
+
+- Al abrirlo, Joule da un briefing con lo importante del momento: gente en turno, incidencias pendientes, tickets de prioridad alta y alertas activas.
+- Las skills funcionan siempre, sin backend ni API key, igual que el resto de la demo (GitHub Pages incluido):
+  - "Quien esta trabajando ahora"
+  - "Resume el riesgo de hoy" / "Como va todo"
+  - "Que incidencias estan pendientes"
+  - "Aprueba las vacaciones de Ana Lopez" / "Rechaza el permiso de Carlos Mendez"
+  - "Cuantos dias de vacaciones tiene Sofia Ramirez"
+  - "Estado de Ana Lopez" (horas trabajadas, estado actual)
+  - "Cuantos tickets de prioridad alta hay abiertos"
+  - "Crea un ticket por link sospechoso para Carlos Mendez"
+  - "Como va el score de phishing"
+  - "Exporta el reporte de asistencia"
+- Las acciones (aprobar/rechazar incidencias, crear tickets, exportar) usan las mismas funciones que los botones del panel, asi que quedan registradas en auditoria y sincronizadas con el backend igual que cualquier otra accion.
+- Capa opcional de lenguaje libre: si la skill local no entiende la pregunta y el backend tiene `ANTHROPIC_API_KEY` configurada, la pregunta se manda a `/api/joule/query`, que arma un snapshot de los datos reales (incidencias, tickets, alertas, campanas) y se lo pasa a un modelo de Claude para responder en espanol, con instruccion explicita de no inventar datos fuera del snapshot. Sin la API key configurada, Joule sigue funcionando por completo con las skills deterministas.
+- Variables relevantes en `.env`: `ANTHROPIC_API_KEY` (vacio = capa generativa desactivada) y `JOULE_MODEL` (modelo a usar, por defecto `claude-sonnet-5`).
 
 ## Que faltaria para produccion completa
 

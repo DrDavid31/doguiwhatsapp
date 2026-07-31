@@ -1165,6 +1165,7 @@ function renderIntegrations() {
     <div class="row-card"><div><strong>Tracking publico</strong><span>${escapeHtml(health.publicBaseUrl || "Configura PUBLIC_BASE_URL para links reales.")}</span></div><span class="pill ok">Incluido</span></div>
     <div class="row-card"><div><strong>Validacion de telefono</strong><span>El empleado solo puede checar desde su numero registrado.</span></div><span class="pill ok">Incluido</span></div>
     <div class="row-card"><div><strong>Tickets y reportes</strong><span>Security Assistant y Phishing Simulator ya usan tablas propias.</span></div><span class="pill ok">Incluido</span></div>
+    <div class="row-card"><div><strong>DOGUI Joule (IA generativa)</strong><span>Skills de asistencia, seguridad y phishing incluidas siempre. Lenguaje libre via Claude cuando hay ANTHROPIC_API_KEY.</span></div>${statusPill(Boolean(health.jouleConfigured))}</div>
   `;
 }
 
@@ -1272,6 +1273,8 @@ function renderAudit() {
 
 function renderSession() {
   byId("loginScreen").classList.toggle("hidden", Boolean(session));
+  byId("jouleLauncher").classList.toggle("hidden", !session);
+  if (!session) jouleClosePanel();
   const mode = DEMO_MODE ? "Demo GitHub Pages" : "Backend conectado";
   const company = state.companies.find((item) => item.id === state.selectedCompanyId) || state.companies[0] || { name: "DOGUI" };
   byId("sessionLabel").textContent = session ? `${company.name} - ${session.user} - ${session.role} - ${mode}` : `${company.name} - ${mode}`;
@@ -1298,6 +1301,7 @@ function render() {
   renderSecurityAssistant();
   renderPhishingSimulator();
   renderAudit();
+  if (jouleOpen) jouleRenderQuickPrompts();
 }
 
 function downloadCsv() {
@@ -1313,6 +1317,272 @@ function downloadCsv() {
   link.download = `reporte-asistencia-dogui-${state.report.from}-${state.report.to}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
+}
+
+/* DOGUI Joule: copiloto conversacional inspirado en SAP Joule.
+   Capa de skills deterministas (siempre activa) sobre el mismo `state` del panel,
+   mas una capa opcional de lenguaje libre via backend + Claude cuando esta configurada. */
+const JOULE_HISTORY_KEY = "dogui-joule-history";
+let jouleHistory = JSON.parse(sessionStorage.getItem(JOULE_HISTORY_KEY) || "[]");
+let jouleOpen = false;
+let jouleBusy = false;
+
+function jouleGreetingName() {
+  return session?.user?.split("@")[0] || "equipo";
+}
+
+function currentJouleView() {
+  return (location.hash || "#tablero").replace("#", "");
+}
+
+function findEmployeeForQuery(rawText) {
+  const text = rawText.toLowerCase();
+  const active = state.employees.filter((employee) => employee.active);
+  return (
+    active.find((employee) => text.includes(employee.name.toLowerCase())) ||
+    active.find((employee) => text.includes(employee.name.toLowerCase().split(" ")[0]))
+  );
+}
+
+function findPendingIssueForEmployee(employee, type) {
+  return state.issues.find((issue) => issue.employeeId === employee.id && issue.status === "Pendiente" && (!type || issue.type === type));
+}
+
+function jouleBriefing() {
+  const metrics = getDashboardMetrics();
+  const riskLabel = metrics.riskScore > 58 ? "alto" : metrics.riskScore > 26 ? "medio" : "bajo";
+  const lines = [
+    `Hola ${jouleGreetingName()}, esto es lo importante ahora mismo:`,
+    `${metrics.working} de ${metrics.employees.length} activos en turno - riesgo ${riskLabel}.`
+  ];
+  if (metrics.openIssues) lines.push(`${metrics.openIssues} incidencia(s) pendiente(s) de aprobar.`);
+  if (metrics.highSecurityTickets) lines.push(`${metrics.highSecurityTickets} ticket(s) de seguridad de prioridad alta sin cerrar.`);
+  if (metrics.openAlerts) lines.push(`${metrics.openAlerts} alerta(s) operativa(s) activa(s).`);
+  if (!metrics.openIssues && !metrics.highSecurityTickets && !metrics.openAlerts) lines.push("No hay pendientes criticos. Todo en orden.");
+  return lines.join("\n");
+}
+
+function jouleQuickPrompts() {
+  const sampleEmployee = activeEmployees()[0]?.name || "un empleado";
+  const pendingIssue = state.issues.find((issue) => issue.status === "Pendiente");
+  const byView = {
+    seguridad: ["Resume el riesgo de seguridad", "Cuantos tickets de prioridad alta hay abiertos"],
+    phishing: ["Como va el score de phishing"],
+    incidencias: pendingIssue ? [`Aprueba la incidencia de ${pendingIssue.employeeName}`, "Que incidencias estan pendientes"] : ["Que incidencias estan pendientes"],
+    empleados: [`Cuantos dias de vacaciones tiene ${sampleEmployee}`, "Quien esta trabajando ahora"]
+  };
+  return byView[currentJouleView()] || ["Quien esta trabajando ahora", "Resume el riesgo de hoy", "Que incidencias estan pendientes", "Exporta el reporte de asistencia"];
+}
+
+async function jouleCreateSecurityTicket(employee, type, detail, severity) {
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/security/tickets", {
+      method: "POST",
+      body: { employeeId: employee.id, type, detail, severity, sourceChannel: "Joule" }
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    await hydrateFromBackend();
+    return payload.ticket;
+  }
+  const ticket = securityTicketSeed(employee, type, detail, severity);
+  state.securityTickets.unshift(ticket);
+  state.securityAlerts.unshift({
+    id: makeId(),
+    title: `${ticket.severity}: ${ticket.type}`,
+    detail: `${ticket.employeeName} reporto: ${ticket.detail}`,
+    severity: ticket.severity,
+    status: "Activa",
+    timestamp: ticket.timestamp
+  });
+  addAudit("Ticket de seguridad creado desde Joule", `${ticket.number} - ${ticket.type}`);
+  saveState();
+  render();
+  return ticket;
+}
+
+async function jouleCreateTicketFromText(raw) {
+  const employee = findEmployeeForQuery(raw) || activeEmployees()[0];
+  if (!employee) return "No hay empleados activos para asociar el ticket.";
+  const typeKeywords = { "link sospechoso": "Link sospechoso", "correo falso": "Correo falso", "archivo raro": "Archivo raro", sat: "Fraude SAT", banco: "Fraude bancario", fraude: "Fraude" };
+  const lower = raw.toLowerCase();
+  const matchedType = Object.entries(typeKeywords).find(([key]) => lower.includes(key));
+  const type = matchedType ? matchedType[1] : "Reporte";
+  const ticket = await jouleCreateSecurityTicket(employee, type, raw, "Media");
+  if (!ticket) return "No se pudo crear el ticket, intenta de nuevo.";
+  return `Ticket ${ticket.number} creado para ${employee.name} (${type}).${ticket.response ? ` ${ticket.response}` : ""}`;
+}
+
+function jouleResolveIssue(raw, status) {
+  const employee = findEmployeeForQuery(raw);
+  const actionWord = status === "Aprobada" ? "aprueba" : "rechaza";
+  if (!employee) return `Dime de quien es la incidencia. Por ejemplo: "${actionWord} las vacaciones de ${activeEmployees()[0]?.name || "Ana Lopez"}".`;
+  const typeMatch = ["vacaciones", "permiso", "incapacidad"].find((type) => raw.toLowerCase().includes(type));
+  const issue = findPendingIssueForEmployee(employee, typeMatch);
+  if (!issue) return `${employee.name} no tiene incidencias pendientes${typeMatch ? ` de ${typeMatch}` : ""}.`;
+  updateIssue(issue.id, status);
+  return `Listo. Marque la incidencia de ${issue.type} de ${employee.name} como "${status}".`;
+}
+
+const JOULE_SKILLS = [
+  { id: "saludo", test: (t) => /^(hola|buenas|hey|hi)\b/.test(t), run: () => jouleBriefing() },
+  {
+    id: "quien-trabaja",
+    test: (t) => /(quien|quién).*(trabaj|turno)|trabajando ahora/.test(t),
+    run: () => {
+      const working = activeEmployees().filter((employee) => currentWorkState(employee.id) === "En turno");
+      return working.length ? `En turno ahora mismo: ${working.map((employee) => employee.name).join(", ")}.` : "Nadie tiene una entrada activa registrada en este momento.";
+    }
+  },
+  { id: "resumen-riesgo", test: (t) => /riesgo|resumen|salud operativa|c[oó]mo (vamos|va todo)/.test(t), run: () => jouleBriefing() },
+  {
+    id: "tickets-seguridad",
+    test: (t) => /ticket.*(seguridad|prioridad|abiert)/.test(t),
+    run: () => {
+      const tickets = (state.securityTickets || []).filter((ticket) => ticket.status !== "Cerrado");
+      if (!tickets.length) return "No hay tickets de seguridad abiertos.";
+      const high = tickets.filter((ticket) => ticket.severity === "Alta");
+      const detail = tickets.slice(0, 5).map((ticket) => `${ticket.number} - ${ticket.employeeName}: ${ticket.type} (${ticket.severity})`).join("\n");
+      return `${tickets.length} ticket(s) abierto(s), ${high.length} de prioridad alta.\n${detail}`;
+    }
+  },
+  {
+    id: "incidencias-pendientes",
+    test: (t) => /incidencia.*pendient|pendiente.*aprobar|solicitudes pendientes/.test(t),
+    run: () => {
+      const pending = state.issues.filter((issue) => issue.status === "Pendiente");
+      if (!pending.length) return "No hay incidencias pendientes de aprobacion.";
+      const detail = pending.slice(0, 6).map((issue) => `${issue.employeeName} - ${issue.type} (${formatDate(issue.timestamp)})`).join("\n");
+      return `${pending.length} pendiente(s):\n${detail}`;
+    }
+  },
+  { id: "aprobar-incidencia", test: (t) => /(aprueba|aprobar|autoriza)/.test(t), run: (raw) => jouleResolveIssue(raw, "Aprobada") },
+  { id: "rechazar-incidencia", test: (t) => /(rechaza|rechazar|niega|deniega)/.test(t), run: (raw) => jouleResolveIssue(raw, "Rechazada") },
+  {
+    id: "saldo-vacaciones",
+    test: (t) => /(dias|días).*vacacion|saldo.*vacacion/.test(t),
+    run: (raw) => {
+      const employee = findEmployeeForQuery(raw);
+      return employee
+        ? `${employee.name} tiene ${employee.vacationDays} dia(s) de vacaciones disponibles.`
+        : "Dime el nombre del empleado, por ejemplo: 'cuantos dias de vacaciones tiene Ana Lopez'.";
+    }
+  },
+  {
+    id: "estado-empleado",
+    test: (t) => /(estado|informacion|información|horas trabajadas) de\b/.test(t),
+    run: (raw) => {
+      const employee = findEmployeeForQuery(raw);
+      if (!employee) return "No encontre a ese empleado. Verifica el nombre.";
+      const worked = calculateWorkedHours(employee.id).toFixed(1);
+      return `${employee.name} (${employee.area}) - estado: ${currentWorkState(employee.id)}. Horas trabajadas hoy: ${worked}h. Vacaciones disponibles: ${employee.vacationDays}.`;
+    }
+  },
+  {
+    id: "phishing-score",
+    test: (t) => /phishing|campañ|campan/.test(t),
+    run: () => {
+      const metrics = getDashboardMetrics();
+      if (!metrics.campaigns.length) return "Todavia no hay campanas de phishing simuladas.";
+      return `Score de phishing: ${metrics.phishingScore}%. Clics ${metrics.clickRate}%, reportes ${metrics.reportRate}%, capacitados ${metrics.trainingRate}%.`;
+    }
+  },
+  { id: "crear-ticket", test: (t) => /(crea|abre|genera).*ticket/.test(t), run: (raw) => jouleCreateTicketFromText(raw) },
+  {
+    id: "exportar-reporte",
+    test: (t) => /(exporta|descarga).*(reporte|csv|asistencia)/.test(t),
+    run: () => {
+      downloadCsv();
+      return "Listo, descargue el CSV de asistencia del periodo seleccionado.";
+    }
+  },
+  {
+    id: "ayuda",
+    test: (t) => /ayuda|que puedes hacer|qué puedes hacer|comandos/.test(t),
+    run: () =>
+      "Puedo: darte el resumen de riesgo, decir quien esta en turno, listar incidencias o tickets pendientes, aprobar/rechazar solicitudes ('aprueba las vacaciones de Ana'), consultar saldo de vacaciones, resumir phishing, crear un ticket de seguridad o exportar el reporte de asistencia."
+  }
+];
+
+function resolveJouleSkill(text) {
+  const normalized = text.toLowerCase().trim();
+  const skill = JOULE_SKILLS.find((item) => item.test(normalized));
+  return skill ? skill.run(text) : null;
+}
+
+async function jouleAnswer(text) {
+  const local = await resolveJouleSkill(text);
+  if (local) return local;
+  if (HAS_BACKEND && integrationHealth?.jouleConfigured) {
+    try {
+      const response = await apiFetch("/api/joule/query", {
+        method: "POST",
+        body: { message: text, viewContext: currentJouleView() }
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        if (payload.available && payload.reply) return payload.reply;
+      }
+    } catch (error) {
+      console.warn("Joule IA no disponible", error);
+    }
+  }
+  return `No estoy segura de haber entendido. Prueba con:\n${jouleQuickPrompts().map((prompt) => `- ${prompt}`).join("\n")}`;
+}
+
+function jouleSaveHistory() {
+  jouleHistory = jouleHistory.slice(-40);
+  sessionStorage.setItem(JOULE_HISTORY_KEY, JSON.stringify(jouleHistory));
+}
+
+function jouleRenderMessages() {
+  const box = byId("jouleMessages");
+  box.innerHTML = jouleHistory.length
+    ? jouleHistory.map((msg) => `<div class="bubble joule-bubble ${msg.role === "user" ? "system" : ""}">${escapeHtml(msg.text).replaceAll("\n", "<br>")}</div>`).join("")
+    : emptyState("Preguntame sobre asistencia, seguridad o phishing.");
+  box.scrollTop = box.scrollHeight;
+}
+
+function jouleRenderQuickPrompts() {
+  byId("jouleQuickPrompts").innerHTML = jouleQuickPrompts()
+    .map((prompt) => `<button type="button" class="joule-chip" data-prompt="${escapeAttr(prompt)}">${escapeHtml(prompt)}</button>`)
+    .join("");
+}
+
+function jouleOpenPanel() {
+  jouleOpen = true;
+  byId("joulePanel").classList.remove("hidden");
+  jouleRenderQuickPrompts();
+  if (!jouleHistory.length) {
+    jouleHistory.push({ role: "assistant", text: jouleBriefing() });
+    jouleSaveHistory();
+  }
+  jouleRenderMessages();
+  byId("jouleInput").focus();
+}
+
+function jouleClosePanel() {
+  jouleOpen = false;
+  byId("joulePanel")?.classList.add("hidden");
+}
+
+async function jouleSubmit(rawText) {
+  const clean = rawText.trim();
+  if (!clean || jouleBusy) return;
+  jouleBusy = true;
+  jouleHistory.push({ role: "user", text: clean });
+  jouleRenderMessages();
+  byId("jouleInput").value = "";
+  byId("jouleMessages").insertAdjacentHTML("beforeend", `<div class="bubble joule-bubble joule-thinking">Pensando...</div>`);
+  byId("jouleMessages").scrollTop = byId("jouleMessages").scrollHeight;
+  try {
+    jouleHistory.push({ role: "assistant", text: await jouleAnswer(clean) });
+  } catch (error) {
+    jouleHistory.push({ role: "assistant", text: "Tuve un problema para responder. Intenta de nuevo." });
+  }
+  jouleSaveHistory();
+  jouleRenderMessages();
+  jouleBusy = false;
 }
 
 byId("loginForm").addEventListener("submit", async (event) => {
@@ -1466,6 +1736,20 @@ document.addEventListener("click", (event) => {
 byId("exportCsv").addEventListener("click", downloadCsv);
 byId("reportFrom").value = state.report.from;
 byId("reportTo").value = state.report.to;
+
+byId("jouleLauncher").addEventListener("click", () => (jouleOpen ? jouleClosePanel() : jouleOpenPanel()));
+byId("jouleClose").addEventListener("click", jouleClosePanel);
+byId("jouleForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  jouleSubmit(byId("jouleInput").value);
+});
+byId("jouleQuickPrompts").addEventListener("click", (event) => {
+  const chip = event.target.closest(".joule-chip");
+  if (chip) jouleSubmit(chip.dataset.prompt);
+});
+window.addEventListener("hashchange", () => {
+  if (jouleOpen) jouleRenderQuickPrompts();
+});
 
 render();
 hydrateFromBackend();

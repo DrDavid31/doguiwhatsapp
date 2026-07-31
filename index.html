@@ -441,6 +441,26 @@
       </section>
     </main>
 
+    <button id="jouleLauncher" class="joule-launcher hidden" type="button" aria-label="Abrir DOGUI Joule">
+      <span class="joule-spark">&#10024;</span>
+    </button>
+
+    <aside id="joulePanel" class="joule-panel hidden">
+      <header class="joule-head">
+        <div>
+          <strong>DOGUI Joule</strong>
+          <span>Copiloto de operacion y seguridad</span>
+        </div>
+        <button id="jouleClose" type="button" aria-label="Cerrar Joule">&times;</button>
+      </header>
+      <div id="jouleQuickPrompts" class="joule-prompts"></div>
+      <div id="jouleMessages" class="chat joule-messages"></div>
+      <form id="jouleForm" class="joule-form">
+        <input id="jouleInput" type="text" placeholder="Pregunta algo o pide una accion..." autocomplete="off" />
+        <button class="primary" type="submit">Enviar</button>
+      </form>
+    </aside>
+
     <script src="app.js"></script>
   </body>
 </html>
