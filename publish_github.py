@@ -61,7 +61,7 @@ def ensure_repo():
     payload = {
         "name": REPO_NAME,
         "private": VISIBILITY_PRIVATE,
-        "description": "Checador de tiempo empresarial por WhatsApp con backend SQLite y webhook de Meta.",
+        "description": "DOGUI WhatsApp: control de asistencia empresarial por WhatsApp con backend SQLite y webhook de Meta.",
         "auto_init": False,
     }
     try:

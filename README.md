@@ -1,6 +1,6 @@
-# Checador de tiempo por WhatsApp
+# DOGUI WhatsApp
 
-Prototipo avanzado de reloj checador empresarial por WhatsApp. Funciona como app estatica: abre `index.html` en el navegador y los datos se guardan en `localStorage`.
+Prototipo avanzado de control de asistencia empresarial por WhatsApp. Funciona como app estatica: abre `index.html` en el navegador y los datos se guardan en `localStorage`.
 
 Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se muestra un modo demo con datos precargados; el backend real se usa cuando corres `run-server.ps1`.
 
