@@ -129,7 +129,7 @@ async function apiFetch(path, options = {}) {
 function saveState(next = state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   if (HAS_BACKEND && !syncingState && session) {
-    pendingBackendPayload = JSON.stringify(next);
+    pendingBackendPayload = JSON.stringify({ ...next, _version: state.version });
     window.clearTimeout(backendSaveTimer);
     backendSaveTimer = window.setTimeout(() => {
       apiFetch("/api/state", {
@@ -137,9 +137,18 @@ function saveState(next = state) {
         headers: { "Content-Type": "application/json" },
         body: pendingBackendPayload
       })
-        .then((response) => {
+        .then(async (response) => {
+          if (response.status === 409) {
+            console.warn("Otro usuario guardo cambios primero; recargando estado del servidor.");
+            await hydrateFromBackend();
+            return;
+          }
           const wasUnreachable = backendUnreachable;
           backendUnreachable = !response.ok;
+          if (response.ok) {
+            const payload = await response.json();
+            if (typeof payload.version === "number") state.version = payload.version;
+          }
           if (wasUnreachable !== backendUnreachable) render();
         })
         .catch((error) => {
@@ -736,9 +745,20 @@ function refreshAlerts() {
   });
 }
 
-function updateIssue(id, status) {
+async function updateIssue(id, status) {
   const issue = state.issues.find((item) => item.id === id);
   if (!issue) return;
+
+  if (HAS_BACKEND) {
+    const response = await apiFetch(`/api/issues/${id}/status`, { method: "POST", body: { status } });
+    if (!response.ok) {
+      alert(response.status === 403 ? "No tienes permiso para resolver incidencias." : "No se pudo actualizar la incidencia.");
+      return;
+    }
+    await hydrateFromBackend();
+    return;
+  }
+
   issue.status = status;
   issue.resolvedAt = now().toISOString();
   if (issue.type === "vacaciones" && status === "Aprobada") {
@@ -750,11 +770,22 @@ function updateIssue(id, status) {
   render();
 }
 
-function closeAlert(id) {
-  const alert = state.alerts.find((item) => item.id === id);
-  if (!alert) return;
-  alert.status = "Cerrada";
-  addAudit("Alerta cerrada", `${alert.employeeName}: ${alert.type}`);
+async function closeAlert(id) {
+  const alertItem = state.alerts.find((item) => item.id === id);
+  if (!alertItem) return;
+
+  if (HAS_BACKEND) {
+    const response = await apiFetch(`/api/alerts/${id}/status`, { method: "POST", body: { status: "Cerrada" } });
+    if (!response.ok) {
+      alert(response.status === 403 ? "No tienes permiso para cerrar alertas." : "No se pudo cerrar la alerta.");
+      return;
+    }
+    await hydrateFromBackend();
+    return;
+  }
+
+  alertItem.status = "Cerrada";
+  addAudit("Alerta cerrada", `${alertItem.employeeName}: ${alertItem.type}`);
   saveState();
   render();
 }
@@ -785,7 +816,7 @@ async function updateSecurityTicketStatus(id, status) {
   render();
 }
 
-function saveEmployee(event) {
+async function saveEmployee(event) {
   event.preventDefault();
   const id = byId("employeeId").value;
   const branchId = byId("employeeBranch").value || state.selectedBranchId || branchById().id;
@@ -807,6 +838,23 @@ function saveEmployee(event) {
     return;
   }
 
+  const form = event.target;
+
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/employees", {
+      method: "POST",
+      body: id ? { id, ...payload } : payload
+    });
+    if (!response.ok) {
+      alert("No se pudo guardar el empleado.");
+      return;
+    }
+    form.reset();
+    resetEmployeeForm();
+    await hydrateFromBackend();
+    return;
+  }
+
   if (id) {
     const existing = employeeById(id);
     if (existing) Object.assign(existing, payload);
@@ -814,9 +862,9 @@ function saveEmployee(event) {
     addAudit("Empleado editado", payload.name);
   } else {
     state.employees.push({ id: makeId(), ...payload });
-    addAudit("Empleado agregado", payload.name);
+    addAudit(isEdit ? "Empleado editado" : "Empleado agregado", payload.name);
   }
-  event.target.reset();
+  form.reset();
   resetEmployeeForm();
   saveState();
   render();
@@ -837,10 +885,21 @@ function editEmployee(id) {
   byId("employeeVacation").value = employee.vacationDays;
 }
 
-function deactivateEmployee(id) {
+async function deactivateEmployee(id) {
   const employee = employeeById(id);
   if (!employee) return;
   if (!confirm(`¿Dar de baja a ${employee.name}? Dejara de aparecer como empleado activo y no podra checar por WhatsApp.`)) return;
+
+  if (HAS_BACKEND) {
+    const response = await apiFetch(`/api/employees/${id}`, { method: "DELETE" });
+    if (!response.ok) {
+      alert(response.status === 403 ? "No tienes permiso para dar de baja empleados." : "No se pudo dar de baja al empleado.");
+      return;
+    }
+    await hydrateFromBackend();
+    return;
+  }
+
   employee.active = false;
   addAudit("Empleado dado de baja", employee.name);
   saveState();
@@ -1700,9 +1759,9 @@ byId("cancelEditEmployee").addEventListener("click", () => {
   resetEmployeeForm();
 });
 
-byId("policyForm").addEventListener("submit", (event) => {
+byId("policyForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  state.policy = {
+  const policy = {
     tolerance: readNumber("policyTolerance", defaultPolicy.tolerance, 0),
     forgottenExitHours: readNumber("policyForgottenExit", defaultPolicy.forgottenExitHours, 1),
     geofenceRadius: readNumber("policyRadius", defaultPolicy.geofenceRadius, 50),
@@ -1710,12 +1769,24 @@ byId("policyForm").addEventListener("submit", (event) => {
     requireGps: byId("policyRequireGps").checked,
     requireSelfie: byId("policyRequireSelfie").checked
   };
+
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/policy", { method: "POST", body: policy });
+    if (!response.ok) {
+      alert(response.status === 403 ? "No tienes permiso para cambiar las politicas." : "No se pudo guardar la politica.");
+      return;
+    }
+    await hydrateFromBackend();
+    return;
+  }
+
+  state.policy = policy;
   addAudit("Politicas actualizadas", "Reglas de asistencia modificadas");
   saveState();
   render();
 });
 
-byId("branchForm").addEventListener("submit", (event) => {
+byId("branchForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const name = byId("branchName").value.trim();
   const lat = Number(byId("branchLat").value);
@@ -1728,6 +1799,18 @@ byId("branchForm").addEventListener("submit", (event) => {
     alert("Captura coordenadas validas para la sucursal.");
     return;
   }
+
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/branches", { method: "POST", body: { name, lat, lng } });
+    if (!response.ok) {
+      alert(response.status === 403 ? "No tienes permiso para agregar sucursales." : "No se pudo guardar la sucursal.");
+      return;
+    }
+    event.target.reset();
+    await hydrateFromBackend();
+    return;
+  }
+
   state.branches.push({ id: makeId(), companyId: state.selectedCompanyId, name, lat, lng });
   addAudit("Sucursal agregada", name);
   event.target.reset();

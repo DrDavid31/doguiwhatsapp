@@ -1142,14 +1142,21 @@ def build_state(con):
         "phishingTemplates": list_phishing_templates(con),
         "phishingCampaigns": list_phishing_campaigns(con),
         "report": report,
+        "version": int(get_meta(con, "state_version", "0")),
     }
 
 
-def save_state(state):
+def save_state(state, expected_version=None):
     with connect() as con:
+        current_version = int(get_meta(con, "state_version", "0"))
+        if expected_version is not None and int(expected_version) != current_version:
+            return {"conflict": True, "version": current_version}
         import_state(con, state, replace=True)
         seed_phishing_templates(con)
         migrate_product_meta(con)
+        new_version = current_version + 1
+        con.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('state_version', ?)", (str(new_version),))
+        return {"conflict": False, "version": new_version}
 
 
 def classify_event(message):
@@ -2017,8 +2024,10 @@ class Handler(SimpleHTTPRequestHandler):
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
-            save_state(payload)
-            return self.send_json({"ok": True})
+            result = save_state(payload, payload.get("_version"))
+            if result["conflict"]:
+                return self.send_json({"error": "conflict", "version": result["version"]}, 409)
+            return self.send_json({"ok": True, "version": result["version"]})
         return self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -2052,8 +2061,10 @@ class Handler(SimpleHTTPRequestHandler):
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
-            save_state(payload)
-            return self.send_json({"ok": True})
+            result = save_state(payload, payload.get("_version"))
+            if result["conflict"]:
+                return self.send_json({"error": "conflict", "version": result["version"]}, 409)
+            return self.send_json({"ok": True, "version": result["version"]})
 
         if parsed.path == "/api/employees":
             user = self.require_user()
@@ -2160,12 +2171,96 @@ class Handler(SimpleHTTPRequestHandler):
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
+            status = payload.get("status", "Pendiente")
             with connect() as con:
-                cursor = con.execute("UPDATE issues SET status = ?, resolved_at = ? WHERE id = ?", (payload.get("status", "Pendiente"), utc_now(), issue_id))
-                if cursor.rowcount == 0:
+                issue = con.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
+                if not issue:
                     return self.send_json({"error": "issue_not_found"}, 404)
+                con.execute("UPDATE issues SET status = ?, resolved_at = ? WHERE id = ?", (status, utc_now(), issue_id))
+                if issue["type"] == "vacaciones" and status == "Aprobada":
+                    con.execute("UPDATE employees SET vacation_days = MAX(0, vacation_days - 1) WHERE id = ?", (issue["employee_id"],))
                 add_audit(con, "Incidencia actualizada", issue_id, user["name"], user["role"])
             return self.send_json({"ok": True})
+
+        if parsed.path.startswith("/api/alerts/") and parsed.path.endswith("/status"):
+            user = self.require_user()
+            if not user:
+                return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
+            alert_id = parsed.path.split("/")[3]
+            _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
+            status = payload.get("status", "Cerrada")
+            with connect() as con:
+                cursor = con.execute("UPDATE alerts SET status = ? WHERE id = ?", (status, alert_id))
+                if cursor.rowcount == 0:
+                    return self.send_json({"error": "alert_not_found"}, 404)
+                add_audit(con, "Alerta actualizada", f"{alert_id} -> {status}", user["name"], user["role"])
+            return self.send_json({"ok": True})
+
+        if parsed.path == "/api/policy":
+            user = self.require_user()
+            if not user:
+                return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
+            _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
+            try:
+                tolerance = int(payload.get("tolerance", DEFAULT_POLICY["tolerance"]))
+                forgotten_exit_hours = float(payload.get("forgottenExitHours", DEFAULT_POLICY["forgottenExitHours"]))
+                geofence_radius = int(payload.get("geofenceRadius", DEFAULT_POLICY["geofenceRadius"]))
+                overtime_after_hours = float(payload.get("overtimeAfterHours", DEFAULT_POLICY["overtimeAfterHours"]))
+            except (TypeError, ValueError):
+                return self.send_json({"error": "invalid_policy_values"}, 400)
+            with connect() as con:
+                con.execute(
+                    """
+                    INSERT OR REPLACE INTO policies
+                    (company_id, tolerance, forgotten_exit_hours, geofence_radius, overtime_after_hours, require_gps, require_selfie)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user["company_id"],
+                        tolerance,
+                        forgotten_exit_hours,
+                        geofence_radius,
+                        overtime_after_hours,
+                        bool_int(payload.get("requireGps", DEFAULT_POLICY["requireGps"])),
+                        bool_int(payload.get("requireSelfie", DEFAULT_POLICY["requireSelfie"])),
+                    ),
+                )
+                add_audit(con, "Politica actualizada", user["company_id"], user["name"], user["role"])
+            return self.send_json({"ok": True})
+
+        if parsed.path == "/api/branches":
+            user = self.require_user()
+            if not user:
+                return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
+            _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
+            name = (payload.get("name") or "").strip()
+            if not name:
+                return self.send_json({"error": "name_required"}, 400)
+            try:
+                lat = float(payload.get("lat", 0))
+                lng = float(payload.get("lng", 0))
+            except (TypeError, ValueError):
+                return self.send_json({"error": "invalid_coordinates"}, 400)
+            branch_id = payload.get("id") or make_id("br")
+            with connect() as con:
+                con.execute(
+                    "INSERT OR REPLACE INTO branches (id, company_id, name, lat, lng, active) VALUES (?, ?, ?, ?, ?, 1)",
+                    (branch_id, user["company_id"], name, lat, lng),
+                )
+                add_audit(con, "Sucursal guardada", name, user["name"], user["role"])
+            return self.send_json({"ok": True, "id": branch_id})
 
         if parsed.path == "/api/joule/query":
             user = self.require_user()

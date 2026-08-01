@@ -99,7 +99,10 @@ admin123
 - `GET /t/:campaignId/:targetId`: tracking de clics.
 - `GET /r/:campaignId/:targetId`: tracking de reportes.
 - `GET /training/:campaignId/:targetId`: capacitacion y cierre.
-- `GET /api/state` y `PUT /api/state`: estado consolidado para el panel.
+- `POST /api/alerts/:id/status`: cerrar/actualizar una alerta.
+- `POST /api/policy`: actualizar politicas de asistencia.
+- `POST /api/branches`: alta/edicion de sucursales.
+- `GET /api/state`, `PUT /api/state` y `POST /api/state`: estado consolidado para el panel, con concurrencia optimista por `version` (ver seccion Seguridad).
 
 La base ya no depende de un solo JSON: `server.py` crea tablas normalizadas para empresas, sucursales, politicas, usuarios, sesiones, empleados, registros, incidencias, alertas, auditoria, chat, webhooks, media, tickets de seguridad, evidencia, plantillas, campanas, targets, eventos de phishing y capacitaciones.
 
@@ -207,14 +210,14 @@ Sin dependencias externas (solo `unittest` de la libreria estandar, igual que el
 - Acciones administrativas (dar de baja empleados, aprobar/rechazar incidencias, cerrar tickets, lanzar campanas de phishing) requieren un rol distinto de `Empleado` (`require_role`). Hoy solo existe la cuenta admin sembrada (`Dueno`), asi que esto es proteccion a futuro para cuando se creen mas cuentas.
 - La cookie de sesion se marca `Secure` automaticamente cuando `PUBLIC_BASE_URL` apunta a `https://`.
 - El servidor imprime avisos al arrancar si `META_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` o `PUBLIC_BASE_URL` siguen en valores inseguros/por defecto.
-- Pendiente conocido: `PUT/POST /api/state` sigue aceptando el estado completo de cualquier usuario autenticado (reemplaza todo el dataset). No se restringio por rol porque el patron actual de "guardar todo el blob" no distingue que campo cambio; requeriria mover a endpoints por recurso (como ya se hizo con tickets y campanas) antes de poder aplicar permisos finos ahi tambien.
+- El panel ya usa endpoints por recurso para sus acciones administrativas en vez de depender solo del guardado de estado completo: alta/edicion/baja de empleados (`POST`/`DELETE /api/employees`), aprobar/rechazar incidencias (`POST /api/issues/:id/status`), cerrar alertas (`POST /api/alerts/:id/status`), politicas (`POST /api/policy`) y sucursales (`POST /api/branches`). Esto hace que los permisos por rol arriba mencionados realmente se apliquen desde la interfaz, no solo si alguien llama a la API directamente.
+- `PUT/POST /api/state` (usado para lo que aun no tiene endpoint dedicado: filtros de reporte, seleccion de sucursal/empresa, chat y registros en modo demo) ahora usa concurrencia optimista: cada snapshot trae un numero de `version`, y el guardado se rechaza con 409 si otro usuario ya guardo cambios primero, en vez de sobreescribirlos en silencio. El cliente detecta el 409 y recarga el estado real del servidor automaticamente.
 
 ## Que faltaria para produccion completa
 
 - Hospedar `server.py` detras de HTTPS con dominio propio.
 - Configurar plantillas de WhatsApp aprobadas por Meta para mensajes proactivos.
 - Agregar email real al catalogo de empleados para campanas por correo.
-- Mover `PUT/POST /api/state` a endpoints por recurso para poder aplicar permisos finos por rol ahi tambien (ver seccion Seguridad).
 - Agregar aviso de privacidad, consentimiento y politicas internas.
 - Integracion directa con SIEM/ticketing externo.
 

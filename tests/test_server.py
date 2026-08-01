@@ -223,6 +223,116 @@ class RoleGatingTests(DoguiTestCase):
         status, payload, _ = self.request("DELETE", "/api/employees/emp-carlos", cookie=token)
         self.assertEqual(status, 200, payload)
 
+    def test_empleado_role_is_blocked_from_policy_and_branches(self):
+        self.create_user("empleado2@test.mx", "Empleado")
+        token, _ = self.login("empleado2@test.mx", "test1234")
+
+        status, _, _ = self.request("POST", "/api/policy", {"tolerance": 5}, cookie=token)
+        self.assertEqual(status, 403)
+
+        status, _, _ = self.request("POST", "/api/branches", {"name": "X", "lat": 1, "lng": 1}, cookie=token)
+        self.assertEqual(status, 403)
+
+
+class PolicyBranchAlertTests(DoguiTestCase):
+    def test_update_policy(self):
+        token, _ = self.login()
+        status, payload, _ = self.request(
+            "POST",
+            "/api/policy",
+            {"tolerance": 20, "forgottenExitHours": 6, "geofenceRadius": 400, "overtimeAfterHours": 7, "requireGps": False, "requireSelfie": True},
+            cookie=token,
+        )
+        self.assertEqual(status, 200, payload)
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        self.assertEqual(state["policy"]["tolerance"], 20)
+        self.assertEqual(state["policy"]["geofenceRadius"], 400)
+        self.assertFalse(state["policy"]["requireGps"])
+
+    def test_update_policy_rejects_bad_values(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("POST", "/api/policy", {"tolerance": "not-a-number"}, cookie=token)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "invalid_policy_values")
+
+    def test_create_branch(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("POST", "/api/branches", {"name": "Sucursal Sur", "lat": 19.3, "lng": -99.2}, cookie=token)
+        self.assertEqual(status, 200, payload)
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        names = [b["name"] for b in state["branches"]]
+        self.assertIn("Sucursal Sur", names)
+
+    def test_create_branch_requires_name(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("POST", "/api/branches", {"lat": 1, "lng": 1}, cookie=token)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "name_required")
+
+    def test_close_alert(self):
+        token, _ = self.login()
+        with srv.connect() as con:
+            con.execute(
+                "INSERT INTO alerts (id, alert_key, employee_id, type, detail, severity, status, timestamp) "
+                "VALUES ('alert-1', 'k1', 'emp-ana', 'GPS faltante', 'test', 'warn', 'Abierta', ?)",
+                (srv.utc_now(),),
+            )
+        status, payload, _ = self.request("POST", "/api/alerts/alert-1/status", {"status": "Cerrada"}, cookie=token)
+        self.assertEqual(status, 200, payload)
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        alert = next(a for a in state["alerts"] if a["id"] == "alert-1")
+        self.assertEqual(alert["status"], "Cerrada")
+
+    def test_close_alert_not_found(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("POST", "/api/alerts/does-not-exist/status", {"status": "Cerrada"}, cookie=token)
+        self.assertEqual(status, 404)
+
+
+class StateConcurrencyTests(DoguiTestCase):
+    def test_state_includes_version(self):
+        token, _ = self.login()
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(state["version"], 0)
+
+    def test_stale_version_is_rejected(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("PUT", "/api/state", {"_version": 999, "employees": []}, cookie=token)
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"], "conflict")
+
+    def test_current_version_is_accepted_and_increments(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("PUT", "/api/state", {"_version": 0, "employees": []}, cookie=token)
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["version"], 1)
+
+        status, payload, _ = self.request("PUT", "/api/state", {"_version": 0, "employees": []}, cookie=token)
+        self.assertEqual(status, 409, payload)
+
+    def test_missing_version_is_backward_compatible(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("PUT", "/api/state", {"employees": []}, cookie=token)
+        self.assertEqual(status, 200, payload)
+
+    def test_approving_vacation_issue_decrements_balance(self):
+        token, _ = self.login()
+        status, payload, _ = self.request(
+            "POST", "/api/simulate-whatsapp", {"from": "+52 55 1234 0001", "text": "vacaciones 10/06 al 12/06"}, cookie=token
+        )
+        self.assertEqual(status, 200, payload)
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        issue = next(i for i in state["issues"] if i["status"] == "Pendiente")
+        before = next(e for e in state["employees"] if e["id"] == "emp-ana")["vacationDays"]
+
+        status, payload, _ = self.request("POST", f"/api/issues/{issue['id']}/status", {"status": "Aprobada"}, cookie=token)
+        self.assertEqual(status, 200, payload)
+
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        after = next(e for e in state["employees"] if e["id"] == "emp-ana")["vacationDays"]
+        self.assertEqual(after, before - 1)
+
 
 class EndToEndFlowTests(DoguiTestCase):
     def test_login_report_incident_and_approve(self):
