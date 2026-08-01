@@ -37,6 +37,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 JOULE_MODEL = os.getenv("JOULE_MODEL", "claude-sonnet-5")
 
 
+ADMIN_ROLES = {"Dueno", "RRHH", "Supervisor"}
+
+
 DEFAULT_POLICY = {
     "tolerance": 10,
     "forgottenExitHours": 10,
@@ -1766,7 +1769,7 @@ def training_page(title, body, action_url=None):
 
 def verify_meta_signature(headers, body):
     if not META_APP_SECRET:
-        return True
+        return False
     signature = headers.get("X-Hub-Signature-256", "")
     if not signature.startswith("sha256="):
         return False
@@ -1812,9 +1815,15 @@ def extract_messages(payload):
     return messages
 
 
+STATIC_ALLOWLIST = {"/", "/index.html", "/app.js", "/styles.css"}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def is_static_allowed(self, path):
+        return path in STATIC_ALLOWLIST
 
     def end_headers(self):
         if CORS_ORIGIN:
@@ -1870,6 +1879,12 @@ class Handler(SimpleHTTPRequestHandler):
             user = get_user_from_token(con, self.session_token())
             return dict(user) if user else None
 
+    def require_role(self, user, allowed_roles):
+        if user["role"] not in allowed_roles:
+            self.send_json({"error": "forbidden"}, 403)
+            return False
+        return True
+
     def require_user(self):
         user = self.current_user()
         if not user:
@@ -1880,6 +1895,12 @@ class Handler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.end_headers()
+
+    def do_HEAD(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if not self.is_static_allowed(parsed.path):
+            return self.send_json({"error": "not found"}, 404)
+        return super().do_HEAD()
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1954,6 +1975,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(challenge.encode("utf-8"))
                 return
             return self.send_json({"error": "invalid verification token"}, 403)
+        if not self.is_static_allowed(parsed.path):
+            return self.send_json({"error": "not found"}, 404)
         return super().do_GET()
 
     def do_PUT(self):
@@ -1981,7 +2004,8 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({"error": "credenciales_invalidas"}, 401)
                 token, expires_at = create_session(con, user)
                 add_audit(con, "Inicio de sesion", user["email"], user["name"], user["role"])
-            cookie = f"checador_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={SESSION_DAYS * 86400}"
+            secure_flag = " Secure;" if PUBLIC_BASE_URL.startswith("https://") else ""
+            cookie = f"checador_session={token}; HttpOnly;{secure_flag} SameSite=Lax; Path=/; Max-Age={SESSION_DAYS * 86400}"
             return self.send_json({"ok": True, "user": public_user(dict(user)), "expiresAt": expires_at}, extra_headers={"Set-Cookie": cookie})
 
         if parsed.path == "/api/logout":
@@ -1989,7 +2013,8 @@ class Handler(SimpleHTTPRequestHandler):
             with connect() as con:
                 if token:
                     con.execute("DELETE FROM sessions WHERE token = ?", (token,))
-            return self.send_json({"ok": True}, extra_headers={"Set-Cookie": "checador_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"})
+            secure_flag = " Secure;" if PUBLIC_BASE_URL.startswith("https://") else ""
+            return self.send_json({"ok": True}, extra_headers={"Set-Cookie": f"checador_session=; HttpOnly;{secure_flag} SameSite=Lax; Path=/; Max-Age=0"})
 
         if parsed.path == "/api/state":
             user = self.require_user()
@@ -2039,6 +2064,8 @@ class Handler(SimpleHTTPRequestHandler):
             user = self.require_user()
             if not user:
                 return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
             ticket_id = parsed.path.split("/")[4]
             _, payload = self.read_json()
             if self.reject_invalid_json():
@@ -2062,6 +2089,8 @@ class Handler(SimpleHTTPRequestHandler):
             user = self.require_user()
             if not user:
                 return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
@@ -2080,6 +2109,8 @@ class Handler(SimpleHTTPRequestHandler):
             user = self.require_user()
             if not user:
                 return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
             campaign_id = parsed.path.split("/")[4]
             with connect() as con:
                 launched = launch_phishing_campaign(con, campaign_id, public_base_url(self.headers))
@@ -2093,6 +2124,8 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/issues/") and parsed.path.endswith("/status"):
             user = self.require_user()
             if not user:
+                return
+            if not self.require_role(user, ADMIN_ROLES):
                 return
             issue_id = parsed.path.split("/")[3]
             _, payload = self.read_json()
@@ -2140,6 +2173,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True, "results": results})
 
         if parsed.path == "/api/simulate-whatsapp":
+            user = self.require_user()
+            if not user:
+                return
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
@@ -2162,6 +2198,8 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/employees/"):
             user = self.require_user()
             if not user:
+                return
+            if not self.require_role(user, ADMIN_ROLES):
                 return
             employee_id = parsed.path.split("/")[3]
             with connect() as con:
@@ -2227,9 +2265,19 @@ def public_user(user):
     return {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "companyId": user["company_id"]}
 
 
+def print_security_warnings():
+    if not META_APP_SECRET:
+        print("AVISO: META_APP_SECRET no esta configurado. El webhook /webhooks/whatsapp rechazara todos los mensajes entrantes hasta que lo configures (usa /api/simulate-whatsapp, ya autenticado, para pruebas locales).")
+    if VERIFY_TOKEN == "cambia-este-token":
+        print("AVISO: WHATSAPP_VERIFY_TOKEN sigue en su valor por defecto. Cambialo antes de exponer este servidor.")
+    if not PUBLIC_BASE_URL.startswith("https://"):
+        print("AVISO: PUBLIC_BASE_URL no apunta a un dominio https. La cookie de sesion no se marcara como Secure.")
+
+
 if __name__ == "__main__":
     init_db()
     print(f"Checador WA listo en http://127.0.0.1:{PORT}")
     print("Usuario inicial: admin@empresa.mx / admin123")
     print("Webhook WhatsApp: https://TU-DOMINIO/webhooks/whatsapp")
+    print_security_warnings()
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

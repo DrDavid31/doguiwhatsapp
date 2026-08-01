@@ -118,7 +118,7 @@ Variables de entorno:
 - `WHATSAPP_VERIFY_TOKEN`: token que capturas en Meta para verificar el webhook.
 - `WHATSAPP_TOKEN`: token de acceso de WhatsApp Cloud API.
 - `WHATSAPP_PHONE_NUMBER_ID`: ID del numero de WhatsApp en Meta.
-- `META_APP_SECRET`: opcional, valida la firma `X-Hub-Signature-256`.
+- `META_APP_SECRET`: obligatorio para recibir mensajes reales. Valida la firma `X-Hub-Signature-256`; si no esta configurado, el servidor rechaza todo el trafico entrante del webhook (fail-closed) en lugar de aceptarlo sin verificar.
 - `GRAPH_API_VERSION`: version de Graph API usada para mensajes/media.
 - `SENDGRID_API_KEY` y `EMAIL_FROM`: envio de campanas por correo.
 - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` y `TWILIO_FROM`: envio de campanas por SMS.
@@ -190,12 +190,22 @@ Inspirado en SAP Joule: un copiloto conversacional embebido, con "skills" que co
 - Capa opcional de lenguaje libre: si la skill local no entiende la pregunta y el backend tiene `ANTHROPIC_API_KEY` configurada, la pregunta se manda a `/api/joule/query`, que arma un snapshot de los datos reales (incidencias, tickets, alertas, campanas) y se lo pasa a un modelo de Claude para responder en espanol, con instruccion explicita de no inventar datos fuera del snapshot. Sin la API key configurada, Joule sigue funcionando por completo con las skills deterministas.
 - Variables relevantes en `.env`: `ANTHROPIC_API_KEY` (vacio = capa generativa desactivada) y `JOULE_MODEL` (modelo a usar, por defecto `claude-sonnet-5`).
 
+## Seguridad
+
+- El servidor solo sirve `index.html`, `app.js` y `styles.css` como archivos estaticos; cualquier otra ruta (`.env`, `checador.db`, `server.py`, etc.) responde 404 en lugar de exponerse por el fallback de archivos estaticos.
+- `/api/simulate-whatsapp` requiere sesion iniciada; ya no acepta eventos anonimos.
+- `/webhooks/whatsapp` rechaza (fail-closed) cualquier mensaje si `META_APP_SECRET` no esta configurado o la firma no coincide, en vez de aceptarlo sin verificar.
+- Acciones administrativas (dar de baja empleados, aprobar/rechazar incidencias, cerrar tickets, lanzar campanas de phishing) requieren un rol distinto de `Empleado` (`require_role`). Hoy solo existe la cuenta admin sembrada (`Dueno`), asi que esto es proteccion a futuro para cuando se creen mas cuentas.
+- La cookie de sesion se marca `Secure` automaticamente cuando `PUBLIC_BASE_URL` apunta a `https://`.
+- El servidor imprime avisos al arrancar si `META_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` o `PUBLIC_BASE_URL` siguen en valores inseguros/por defecto.
+- Pendiente conocido: `PUT/POST /api/state` sigue aceptando el estado completo de cualquier usuario autenticado (reemplaza todo el dataset). No se restringio por rol porque el patron actual de "guardar todo el blob" no distingue que campo cambio; requeriria mover a endpoints por recurso (como ya se hizo con tickets y campanas) antes de poder aplicar permisos finos ahi tambien.
+
 ## Que faltaria para produccion completa
 
 - Hospedar `server.py` detras de HTTPS con dominio propio.
 - Configurar plantillas de WhatsApp aprobadas por Meta para mensajes proactivos.
 - Agregar email real al catalogo de empleados para campanas por correo.
-- Definir permisos finos por rol y bitacoras legales.
+- Mover `PUT/POST /api/state` a endpoints por recurso para poder aplicar permisos finos por rol ahi tambien (ver seccion Seguridad).
 - Agregar aviso de privacidad, consentimiento y politicas internas.
 - Integracion directa con SIEM/ticketing externo.
 
