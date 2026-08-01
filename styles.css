@@ -161,6 +161,20 @@ body {
   font-size: 2.2rem;
 }
 
+.login-error {
+  margin: -4px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fdecea;
+  border: 1px solid #f5c6c3;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.login-error[hidden] {
+  display: none;
+}
+
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -666,6 +680,19 @@ th {
 .pill.warn {
   background: #fff0c2;
   color: #8a6200;
+}
+
+.backend-warning {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: #fff0c2;
+  color: #8a6200;
+  font-weight: 600;
+}
+
+.backend-warning[hidden] {
+  display: none;
 }
 
 .pill.danger {

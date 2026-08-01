@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import html
 import json
 import mimetypes
 import os
@@ -1748,7 +1749,9 @@ def build_monthly_phishing_report(con, month=None):
 
 
 def training_page(title, body, action_url=None):
-    action = f'<a class="button" href="{action_url}">Completar capacitacion</a>' if action_url else ""
+    title = html.escape(title)
+    body = html.escape(body)
+    action = f'<a class="button" href="{html.escape(action_url, quote=True)}">Completar capacitacion</a>' if action_url else ""
     return f"""<!doctype html>
 <html lang="es">
 <head>
@@ -1853,15 +1856,23 @@ class Handler(SimpleHTTPRequestHandler):
 
     def read_json(self):
         self._json_error = False
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._json_error = True
+            return b"", {}
         raw = self.rfile.read(length)
         if not raw:
             return raw, {}
         try:
-            return raw, json.loads(raw.decode("utf-8") or "{}")
+            payload = json.loads(raw.decode("utf-8") or "{}")
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._json_error = True
             return raw, {}
+        if not isinstance(payload, dict):
+            self._json_error = True
+            return raw, {}
+        return raw, payload
 
     def reject_invalid_json(self):
         if getattr(self, "_json_error", False):

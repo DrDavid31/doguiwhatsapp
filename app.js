@@ -9,6 +9,7 @@ const DEMO_MODE = !HAS_BACKEND;
 const now = () => new Date();
 const makeId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 let syncingState = false;
+let backendUnreachable = false;
 let integrationHealth = null;
 let backendSaveTimer = null;
 let pendingBackendPayload = "";
@@ -135,7 +136,18 @@ function saveState(next = state) {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: pendingBackendPayload
-      }).catch((error) => console.warn("No se pudo guardar en backend", error));
+      })
+        .then((response) => {
+          const wasUnreachable = backendUnreachable;
+          backendUnreachable = !response.ok;
+          if (wasUnreachable !== backendUnreachable) render();
+        })
+        .catch((error) => {
+          console.warn("No se pudo guardar en backend", error);
+          const wasUnreachable = backendUnreachable;
+          backendUnreachable = true;
+          if (!wasUnreachable) render();
+        });
     }, 450);
   }
 }
@@ -431,9 +443,12 @@ async function hydrateFromBackend() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state = migrateState(await response.json());
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    backendUnreachable = false;
     render();
   } catch (error) {
     console.warn("No se pudo cargar /api/state; usando localStorage", error);
+    backendUnreachable = true;
+    render();
   } finally {
     syncingState = false;
   }
@@ -821,6 +836,7 @@ function editEmployee(id) {
 function deactivateEmployee(id) {
   const employee = employeeById(id);
   if (!employee) return;
+  if (!confirm(`¿Dar de baja a ${employee.name}? Dejara de aparecer como empleado activo y no podra checar por WhatsApp.`)) return;
   employee.active = false;
   addAudit("Empleado dado de baja", employee.name);
   saveState();
@@ -1278,6 +1294,7 @@ function renderSession() {
   const mode = DEMO_MODE ? "Demo GitHub Pages" : "Backend conectado";
   const company = state.companies.find((item) => item.id === state.selectedCompanyId) || state.companies[0] || { name: "DOGUI" };
   byId("sessionLabel").textContent = session ? `${company.name} - ${session.user} - ${session.role} - ${mode}` : `${company.name} - ${mode}`;
+  byId("backendWarning").hidden = !(HAS_BACKEND && backendUnreachable);
 }
 
 function render() {
@@ -1585,15 +1602,33 @@ async function jouleSubmit(rawText) {
   jouleBusy = false;
 }
 
+function setLoginError(message) {
+  const errorBox = byId("loginError");
+  if (!message) {
+    errorBox.hidden = true;
+    errorBox.textContent = "";
+    return;
+  }
+  errorBox.hidden = false;
+  errorBox.textContent = message;
+}
+
 byId("loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (HAS_BACKEND) {
-    const response = await apiFetch("/api/login", {
-      method: "POST",
-      body: { email: byId("loginUser").value, password: byId("loginPassword").value }
-    });
+    setLoginError(null);
+    let response;
+    try {
+      response = await apiFetch("/api/login", {
+        method: "POST",
+        body: { email: byId("loginUser").value, password: byId("loginPassword").value }
+      });
+    } catch (error) {
+      setLoginError("No se pudo contactar al servidor. Revisa tu conexion e intenta de nuevo.");
+      return;
+    }
     if (!response.ok) {
-      alert("Usuario o contrasena incorrectos.");
+      setLoginError("Usuario o contrasena incorrectos.");
       return;
     }
     const payload = await response.json();
@@ -1603,6 +1638,7 @@ byId("loginForm").addEventListener("submit", async (event) => {
     render();
     return;
   }
+  setLoginError(null);
   session = { user: byId("loginUser").value, role: byId("loginRole").value, timestamp: now().toISOString() };
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   addAudit("Inicio de sesion", session.user);
