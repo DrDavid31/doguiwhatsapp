@@ -193,6 +193,7 @@ Inspirado en SAP Joule: un copiloto conversacional embebido, con "skills" que co
 ## Seguridad
 
 - El servidor solo sirve `index.html`, `app.js` y `styles.css` como archivos estaticos; cualquier otra ruta (`.env`, `checador.db`, `server.py`, etc.) responde 404 en lugar de exponerse por el fallback de archivos estaticos.
+- Todos los endpoints `GET` que devuelven datos de la empresa (`/api/state`, `/api/employees`, `/api/records`, `/api/issues`, `/api/media`, tickets, alertas, campanas de phishing) requieren sesion iniciada. Solo quedan publicos `/api/health`, `/api/me` y el catalogo generico `/api/phishing/templates`.
 - `/api/simulate-whatsapp` requiere sesion iniciada; ya no acepta eventos anonimos.
 - `/webhooks/whatsapp` rechaza (fail-closed) cualquier mensaje si `META_APP_SECRET` no esta configurado o la firma no coincide, en vez de aceptarlo sin verificar.
 - Acciones administrativas (dar de baja empleados, aprobar/rechazar incidencias, cerrar tickets, lanzar campanas de phishing) requieren un rol distinto de `Empleado` (`require_role`). Hoy solo existe la cuenta admin sembrada (`Dueno`), asi que esto es proteccion a futuro para cuando se creen mas cuentas.

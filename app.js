@@ -128,7 +128,7 @@ async function apiFetch(path, options = {}) {
 
 function saveState(next = state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  if (HAS_BACKEND && !syncingState) {
+  if (HAS_BACKEND && !syncingState && session) {
     pendingBackendPayload = JSON.stringify(next);
     window.clearTimeout(backendSaveTimer);
     backendSaveTimer = window.setTimeout(() => {
@@ -429,15 +429,19 @@ async function hydrateFromBackend() {
     const healthResponse = await apiFetch("/api/health");
     if (healthResponse.ok) integrationHealth = await healthResponse.json();
     const sessionResponse = await apiFetch("/api/me");
-    if (sessionResponse.ok) {
-      const sessionPayload = await sessionResponse.json();
-      if (sessionPayload.user) {
-        session = { user: sessionPayload.user.email, role: sessionPayload.user.role, timestamp: now().toISOString() };
-        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      } else if (session) {
+    if (!sessionResponse.ok) throw new Error(`HTTP ${sessionResponse.status}`);
+    const sessionPayload = await sessionResponse.json();
+    if (sessionPayload.user) {
+      session = { user: sessionPayload.user.email, role: sessionPayload.user.role, timestamp: now().toISOString() };
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    } else {
+      if (session) {
         session = null;
         localStorage.removeItem(SESSION_KEY);
       }
+      backendUnreachable = false;
+      render();
+      return;
     }
     const response = await apiFetch("/api/state");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);

@@ -1930,34 +1930,52 @@ class Handler(SimpleHTTPRequestHandler):
             user = self.current_user()
             return self.send_json({"user": public_user(user) if user else None})
         if parsed.path == "/api/state":
+            if not self.require_user():
+                return
             with connect() as con:
                 return self.send_json(build_state(con))
         if parsed.path == "/api/employees":
+            if not self.require_user():
+                return
             with connect() as con:
                 return self.send_json(build_state(con)["employees"])
         if parsed.path == "/api/records":
+            if not self.require_user():
+                return
             with connect() as con:
                 return self.send_json(build_state(con)["records"])
         if parsed.path == "/api/issues":
+            if not self.require_user():
+                return
             with connect() as con:
                 return self.send_json(build_state(con)["issues"])
         if parsed.path == "/api/media":
+            if not self.require_user():
+                return
             with connect() as con:
                 rows = [dict(row) for row in con.execute("SELECT * FROM media_attachments ORDER BY created_at DESC LIMIT 200")]
             return self.send_json(rows)
         if parsed.path == "/api/security/tickets":
+            if not self.require_user():
+                return
             with connect() as con:
                 return self.send_json(list_security_tickets(con))
         if parsed.path == "/api/security/alerts":
+            if not self.require_user():
+                return
             with connect() as con:
                 return self.send_json(list_security_alerts(con))
         if parsed.path == "/api/phishing/templates":
             with connect() as con:
                 return self.send_json(list_phishing_templates(con))
         if parsed.path == "/api/phishing/campaigns":
+            if not self.require_user():
+                return
             with connect() as con:
                 return self.send_json(list_phishing_campaigns(con))
         if parsed.path == "/api/phishing/reports/monthly":
+            if not self.require_user():
+                return
             query = urllib.parse.parse_qs(parsed.query)
             with connect() as con:
                 return self.send_json(build_monthly_phishing_report(con, query.get("month", [None])[0]))
