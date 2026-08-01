@@ -190,6 +190,14 @@ Inspirado en SAP Joule: un copiloto conversacional embebido, con "skills" que co
 - Capa opcional de lenguaje libre: si la skill local no entiende la pregunta y el backend tiene `ANTHROPIC_API_KEY` configurada, la pregunta se manda a `/api/joule/query`, que arma un snapshot de los datos reales (incidencias, tickets, alertas, campanas) y se lo pasa a un modelo de Claude para responder en espanol, con instruccion explicita de no inventar datos fuera del snapshot. Sin la API key configurada, Joule sigue funcionando por completo con las skills deterministas.
 - Variables relevantes en `.env`: `ANTHROPIC_API_KEY` (vacio = capa generativa desactivada) y `JOULE_MODEL` (modelo a usar, por defecto `claude-sonnet-5`).
 
+## Pruebas automatizadas
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Sin dependencias externas (solo `unittest` de la libreria estandar, igual que el resto del proyecto). Levanta el servidor real sobre un puerto y una base de datos temporales, e incluye la lista blanca de estaticos, autenticacion (incluyendo los endpoints de lectura), verificacion de firma del webhook, permisos por rol y un flujo completo de login -> incidencia -> aprobacion. Corre en cada push/PR via GitHub Actions (`.github/workflows/tests.yml`).
+
 ## Seguridad
 
 - El servidor solo sirve `index.html`, `app.js` y `styles.css` como archivos estaticos; cualquier otra ruta (`.env`, `checador.db`, `server.py`, etc.) responde 404 en lugar de exponerse por el fallback de archivos estaticos.
