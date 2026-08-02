@@ -390,45 +390,37 @@ async function createSecurityTicket(event) {
   render();
 }
 
-async function launchPhishingCampaign(event) {
-  event.preventDefault();
-  const department = byId("campaignDepartment").value;
-  const template = byId("campaignTemplate").value;
-  const campaignName = byId("campaignName").value.trim() || `Campana DOGUI ${todayIso()}`;
+async function performLaunchCampaign(name, channel, template, department) {
   const selectedTargets = activeEmployees().filter((employee) => department === "Todos" || employee.area === department);
-  if (!selectedTargets.length) {
-    alert("No hay empleados activos para esta campana.");
-    return;
-  }
+  if (!selectedTargets.length) return { ok: false, message: "No hay empleados activos para esta campana." };
   if (HAS_BACKEND) {
     const response = await apiFetch("/api/phishing/campaigns", {
       method: "POST",
-      body: {
-        name: campaignName,
-        channel: byId("campaignChannel").value,
-        template,
-        department,
-        launchNow: true
-      }
+      body: { name, channel, template, department, launchNow: true }
     });
-    if (!response.ok) {
-      alert("No se pudo lanzar la campana en el backend.");
-      return;
-    }
+    if (!response.ok) return { ok: false, message: "No se pudo lanzar la campana en el backend." };
     await hydrateFromBackend();
-    return;
+    return { ok: true, sent: selectedTargets.length };
   }
   const sent = Math.max(8, selectedTargets.length * 12);
   const riskBoost = template.toLowerCase().includes("sat") || template.toLowerCase().includes("banco") ? 0.34 : 0.24;
   const clicked = Math.max(1, Math.round(sent * riskBoost));
   const reported = Math.max(1, Math.round(sent * 0.42));
   const trained = Math.max(reported, Math.round(sent * 0.78));
-  state.phishingCampaigns.unshift(
-    phishingCampaignSeed(campaignName, byId("campaignChannel").value, template, department, sent, clicked, reported, trained)
-  );
-  addAudit("Campana phishing simulada", `${campaignName} - ${department}`);
+  state.phishingCampaigns.unshift(phishingCampaignSeed(name, channel, template, department, sent, clicked, reported, trained));
+  addAudit("Campana phishing simulada", `${name} - ${department}`);
   saveState();
   render();
+  return { ok: true, sent };
+}
+
+async function launchPhishingCampaign(event) {
+  event.preventDefault();
+  const department = byId("campaignDepartment").value;
+  const template = byId("campaignTemplate").value;
+  const campaignName = byId("campaignName").value.trim() || `Campana DOGUI ${todayIso()}`;
+  const result = await performLaunchCampaign(campaignName, byId("campaignChannel").value, template, department);
+  if (!result.ok) alert(result.message);
 }
 
 async function hydrateFromBackend() {
@@ -885,25 +877,28 @@ function editEmployee(id) {
   byId("employeeVacation").value = employee.vacationDays;
 }
 
-async function deactivateEmployee(id) {
-  const employee = employeeById(id);
-  if (!employee) return;
-  if (!confirm(`¿Dar de baja a ${employee.name}? Dejara de aparecer como empleado activo y no podra checar por WhatsApp.`)) return;
-
+async function performDeactivateEmployee(employee) {
   if (HAS_BACKEND) {
-    const response = await apiFetch(`/api/employees/${id}`, { method: "DELETE" });
+    const response = await apiFetch(`/api/employees/${employee.id}`, { method: "DELETE" });
     if (!response.ok) {
-      alert(response.status === 403 ? "No tienes permiso para dar de baja empleados." : "No se pudo dar de baja al empleado.");
-      return;
+      return { ok: false, message: response.status === 403 ? "No tienes permiso para dar de baja empleados." : "No se pudo dar de baja al empleado." };
     }
     await hydrateFromBackend();
-    return;
+    return { ok: true };
   }
-
   employee.active = false;
   addAudit("Empleado dado de baja", employee.name);
   saveState();
   render();
+  return { ok: true };
+}
+
+async function deactivateEmployee(id) {
+  const employee = employeeById(id);
+  if (!employee) return;
+  if (!confirm(`¿Dar de baja a ${employee.name}? Dejara de aparecer como empleado activo y no podra checar por WhatsApp.`)) return;
+  const result = await performDeactivateEmployee(employee);
+  if (!result.ok) alert(result.message);
 }
 
 function resetEmployeeForm() {
@@ -1406,6 +1401,14 @@ const JOULE_HISTORY_KEY = "dogui-joule-history";
 let jouleHistory = JSON.parse(sessionStorage.getItem(JOULE_HISTORY_KEY) || "[]");
 let jouleOpen = false;
 let jouleBusy = false;
+let jouleConfirmAction = null;
+
+const JOULE_CONFIRM_WORDS = /^(si|sí|confirmar|confirmo|dale|ok|de acuerdo|adelante)\b/;
+
+function jouleRequestConfirmation(promptText, run) {
+  jouleConfirmAction = { run };
+  return `${promptText} Responde "si" para confirmar o cualquier otra cosa para cancelar.`;
+}
 
 function jouleGreetingName() {
   return session?.user?.split("@")[0] || "equipo";
@@ -1428,6 +1431,19 @@ function findPendingIssueForEmployee(employee, type) {
   return state.issues.find((issue) => issue.employeeId === employee.id && issue.status === "Pendiente" && (!type || issue.type === type));
 }
 
+function findBranchForQuery(rawText) {
+  const text = rawText.toLowerCase();
+  return state.branches.find((branch) => text.includes(branch.name.toLowerCase()));
+}
+
+function findTicketForQuery(rawText) {
+  const numberMatch = rawText.toUpperCase().match(/DG-\d+/);
+  if (numberMatch) return (state.securityTickets || []).find((ticket) => ticket.number === numberMatch[0]);
+  const employee = findEmployeeForQuery(rawText);
+  if (employee) return (state.securityTickets || []).find((ticket) => ticket.employeeId === employee.id && ticket.status !== "Cerrado");
+  return null;
+}
+
 function jouleBriefing() {
   const metrics = getDashboardMetrics();
   const riskLabel = metrics.riskScore > 58 ? "alto" : metrics.riskScore > 26 ? "medio" : "bajo";
@@ -1446,12 +1462,15 @@ function jouleQuickPrompts() {
   const sampleEmployee = activeEmployees()[0]?.name || "un empleado";
   const pendingIssue = state.issues.find((issue) => issue.status === "Pendiente");
   const byView = {
-    seguridad: ["Resume el riesgo de seguridad", "Cuantos tickets de prioridad alta hay abiertos"],
-    phishing: ["Como va el score de phishing"],
+    seguridad: ["Resume el riesgo de seguridad", "Cuantos tickets de prioridad alta hay abiertos", "Todos los tickets"],
+    phishing: ["Como va el score de phishing", "Que campanas hay"],
     incidencias: pendingIssue ? [`Aprueba la incidencia de ${pendingIssue.employeeName}`, "Que incidencias estan pendientes"] : ["Que incidencias estan pendientes"],
-    empleados: [`Cuantos dias de vacaciones tiene ${sampleEmployee}`, "Quien esta trabajando ahora"]
+    empleados: [`Cuantos dias de vacaciones tiene ${sampleEmployee}`, "Quien esta trabajando ahora", "Cuantos empleados activos hay"],
+    configuracion: ["Cual es la politica actual", "Que sucursales hay"],
+    reportes: ["Reporte de esta semana", "Exporta el reporte de asistencia"],
+    auditoria: ["Que ha pasado hoy"]
   };
-  return byView[currentJouleView()] || ["Quien esta trabajando ahora", "Resume el riesgo de hoy", "Que incidencias estan pendientes", "Exporta el reporte de asistencia"];
+  return byView[currentJouleView()] || ["Quien esta trabajando ahora", "Resume el riesgo de hoy", "Que incidencias estan pendientes", "Llevame a reportes"];
 }
 
 async function jouleCreateSecurityTicket(employee, type, detail, severity) {
@@ -1504,6 +1523,285 @@ function jouleResolveIssue(raw, status) {
   return `Listo. Marque la incidencia de ${issue.type} de ${employee.name} como "${status}".`;
 }
 
+function jouleListEmployees(raw) {
+  const areaMatch = raw.toLowerCase().match(/empleados?\s+(?:de|del?\s+area)\s+([a-záéíóúñ\s]+)/);
+  let employees = activeEmployees();
+  let label = "activos";
+  if (areaMatch) {
+    const area = areaMatch[1].trim();
+    employees = employees.filter((employee) => employee.area.toLowerCase().includes(area));
+    label = `activos de ${area}`;
+  }
+  if (!employees.length) return `No hay empleados ${label}.`;
+  const detail = employees.slice(0, 10).map((employee) => `${employee.name} - ${employee.area} (${employee.phone})`).join("\n");
+  return `${employees.length} empleado(s) ${label}:\n${detail}`;
+}
+
+async function jouleApplyNewEmployee(name, phone, area) {
+  const payload = { name, phone, area, branchId: state.selectedBranchId, mode: "Presencial", role: "Empleado", start: "09:00", end: "18:00", vacationDays: 12, active: true };
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/employees", { method: "POST", body: payload });
+    if (!response.ok) return "No se pudo agregar el empleado.";
+    await hydrateFromBackend();
+    return `Listo, agregue a ${name} (${area}) con telefono ${phone}.`;
+  }
+  state.employees.push({ id: makeId(), ...payload });
+  addAudit("Empleado agregado desde Joule", name);
+  saveState();
+  render();
+  return `Listo, agregue a ${name} (${area}) con telefono ${phone}.`;
+}
+
+function jouleAddEmployeeFromText(raw) {
+  const nameMatch =
+    raw.match(/llamad[oa]\s+([a-zA-ZÀ-ÿ\s]+?)(?=\s+(?:con|tel[eé]fono|tel\b|[aá]rea|en\b)|$)/i) ||
+    raw.match(/empleado\s+([a-zA-ZÀ-ÿ\s]+?)(?=\s+(?:con|tel[eé]fono|tel\b|[aá]rea|en\b)|$)/i);
+  if (!nameMatch) return 'Dime el nombre asi: "agrega un empleado llamado Luis Perez con telefono +52 55 0000 0000".';
+  const name = nameMatch[1].trim();
+  const phoneMatch = raw.match(/(\+?\d[\d\s]{7,}\d)/);
+  if (!phoneMatch) return `Necesito el telefono de ${name}. Ejemplo: "agrega un empleado llamado ${name} con telefono +52 55 0000 0000".`;
+  const phone = phoneMatch[1].trim();
+  const areaMatch = raw.match(/[aá]rea\s+([a-zA-ZÀ-ÿ\s]+?)(?=\s+(?:con|tel[eé]fono|tel\b)|$)/i);
+  const area = areaMatch ? areaMatch[1].trim() : "General";
+  return jouleApplyNewEmployee(name, phone, area);
+}
+
+function jouleDeactivateEmployeeFromText(raw) {
+  const employee = findEmployeeForQuery(raw);
+  if (!employee) return `Dime el nombre del empleado. Por ejemplo: "da de baja a ${activeEmployees()[0]?.name || "Carlos Mendez"}".`;
+  return jouleRequestConfirmation(`¿Confirmas dar de baja a ${employee.name}? Ya no podra checar por WhatsApp.`, async () => {
+    const result = await performDeactivateEmployee(employee);
+    return result.ok ? `Listo, ${employee.name} fue dado de baja.` : result.message;
+  });
+}
+
+function jouleListBranches() {
+  if (!state.branches.length) return "No hay sucursales configuradas.";
+  const detail = state.branches.map((branch) => `${branch.name}${branch.id === state.selectedBranchId ? " (actual)" : ""}`).join("\n");
+  return `Sucursales:\n${detail}`;
+}
+
+function jouleSwitchBranchFromText(raw) {
+  const branch = findBranchForQuery(raw);
+  if (!branch) return `No encontre esa sucursal. Sucursales disponibles: ${state.branches.map((item) => item.name).join(", ")}.`;
+  state.selectedBranchId = branch.id;
+  saveState();
+  render();
+  return `Listo, cambie la vista a ${branch.name}.`;
+}
+
+async function jouleApplyBranch(name, lat, lng) {
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/branches", { method: "POST", body: { name, lat, lng } });
+    if (!response.ok) return response.status === 403 ? "No tienes permiso para agregar sucursales." : "No se pudo guardar la sucursal.";
+    await hydrateFromBackend();
+    return `Listo, agregue la sucursal ${name}.`;
+  }
+  state.branches.push({ id: makeId(), companyId: state.selectedCompanyId, name, lat, lng });
+  addAudit("Sucursal agregada desde Joule", name);
+  saveState();
+  render();
+  return `Listo, agregue la sucursal ${name}.`;
+}
+
+function jouleAddBranchFromText(raw) {
+  const nameMatch = raw.match(/sucursal\s+(?:llamada\s+)?([a-zA-ZÀ-ÿ0-9\s]+?)(?=\s+(?:en|con|lat|latitud)\b|$)/i);
+  const coordsMatch = raw.match(/(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)/);
+  if (!nameMatch) return 'Dime el nombre asi: "agrega la sucursal Sur en 19.3, -99.2".';
+  const name = nameMatch[1].trim();
+  if (!coordsMatch) return `Necesito las coordenadas de ${name}. Ejemplo: "agrega la sucursal ${name} en 19.3, -99.2".`;
+  return jouleApplyBranch(name, Number(coordsMatch[1]), Number(coordsMatch[2]));
+}
+
+function jouleViewPolicy() {
+  const policy = state.policy;
+  return [
+    `Tolerancia: ${policy.tolerance} min.`,
+    `Radio de geocerca: ${policy.geofenceRadius} m.`,
+    `Horas extra despues de: ${policy.overtimeAfterHours} h.`,
+    `Salida olvidada despues de: ${policy.forgottenExitHours} h.`,
+    `GPS obligatorio: ${policy.requireGps ? "si" : "no"}.`,
+    `Evidencia obligatoria: ${policy.requireSelfie ? "si" : "no"}.`
+  ].join("\n");
+}
+
+async function jouleApplyPolicy(nextPolicy, label) {
+  if (HAS_BACKEND) {
+    const response = await apiFetch("/api/policy", { method: "POST", body: nextPolicy });
+    if (!response.ok) return response.status === 403 ? "No tienes permiso para cambiar las politicas." : "No se pudo guardar la politica.";
+    await hydrateFromBackend();
+    return `Listo, actualice la ${label}.`;
+  }
+  state.policy = nextPolicy;
+  addAudit("Politicas actualizadas desde Joule", label);
+  saveState();
+  render();
+  return `Listo, actualice la ${label}.`;
+}
+
+function jouleUpdatePolicyFromText(raw) {
+  const lower = raw.toLowerCase();
+  const numberMatch = raw.match(/(\d+(\.\d+)?)/);
+  const number = numberMatch ? Number(numberMatch[1]) : null;
+  const patch = {};
+  let label = "";
+  if (/toleran/.test(lower) && number !== null) {
+    patch.tolerance = number;
+    label = `tolerancia a ${number} minutos`;
+  } else if (/(geocerca|radio)/.test(lower) && number !== null) {
+    patch.geofenceRadius = number;
+    label = `radio de geocerca a ${number} metros`;
+  } else if (/hora[s]?\s*extra/.test(lower) && number !== null) {
+    patch.overtimeAfterHours = number;
+    label = `horas extra despues de ${number}h`;
+  } else if (/salida olvidada/.test(lower) && number !== null) {
+    patch.forgottenExitHours = number;
+    label = `salida olvidada a las ${number}h`;
+  } else if (/gps/.test(lower)) {
+    patch.requireGps = !/(desactiva|quita|sin|no requiere|no obligatorio)/.test(lower);
+    label = patch.requireGps ? "GPS obligatorio activado" : "GPS obligatorio desactivado";
+  } else if (/(selfie|evidencia)/.test(lower)) {
+    patch.requireSelfie = !/(desactiva|quita|sin|no requiere|no obligatoria)/.test(lower);
+    label = patch.requireSelfie ? "evidencia obligatoria activada" : "evidencia obligatoria desactivada";
+  } else {
+    return 'Dime que cambiar, por ejemplo: "cambia la tolerancia a 15 minutos", "desactiva el GPS obligatorio" o "cambia el radio de geocerca a 300 metros".';
+  }
+  return jouleApplyPolicy({ ...state.policy, ...patch }, label);
+}
+
+function jouleRecordsToday() {
+  const today = dayKey(new Date());
+  const todays = state.records.filter((record) => dayKey(record.timestamp) === today && record.branchId === state.selectedBranchId);
+  if (!todays.length) return "No hay registros hoy en esta sucursal.";
+  const late = todays.filter((record) => record.status === "Retardo").length;
+  return `${todays.length} registro(s) hoy en esta sucursal, ${late} retardo(s).`;
+}
+
+function jouleLateToday() {
+  const today = dayKey(new Date());
+  const late = state.records.filter((record) => dayKey(record.timestamp) === today && record.status === "Retardo");
+  if (!late.length) return "Nadie ha llegado tarde hoy.";
+  return `Llegaron tarde hoy: ${late.map((record) => record.employeeName).join(", ")}.`;
+}
+
+function jouleListAlerts() {
+  const open = state.alerts.filter((alertItem) => alertItem.status === "Abierta");
+  if (!open.length) return "No hay alertas operativas abiertas.";
+  const detail = open.slice(0, 6).map((alertItem) => `${alertItem.employeeName} - ${alertItem.type} (${formatTime(alertItem.timestamp)})`).join("\n");
+  return `${open.length} alerta(s) abierta(s):\n${detail}`;
+}
+
+async function jouleCloseAlertFromText(raw) {
+  const employee = findEmployeeForQuery(raw);
+  const open = state.alerts.filter((alertItem) => alertItem.status === "Abierta" && (!employee || alertItem.employeeName === employee.name));
+  if (!open.length) return employee ? `${employee.name} no tiene alertas abiertas.` : "No encontre alertas abiertas para cerrar. Dime el nombre del empleado.";
+  await closeAlert(open[0].id);
+  return `Listo, cerre la alerta de ${open[0].employeeName} (${open[0].type}).`;
+}
+
+function jouleListAllTickets() {
+  const tickets = state.securityTickets || [];
+  if (!tickets.length) return "No hay tickets de seguridad registrados.";
+  const detail = tickets.slice(0, 8).map((ticket) => `${ticket.number} - ${ticket.employeeName}: ${ticket.type} (${ticket.status})`).join("\n");
+  return `${tickets.length} ticket(s) en total:\n${detail}`;
+}
+
+async function jouleTicketActionFromText(raw, status) {
+  const ticket = findTicketForQuery(raw);
+  if (!ticket) return "Dime el numero del ticket (ej. DG-0001) o el nombre del empleado.";
+  await updateSecurityTicketStatus(ticket.id, status);
+  return `Listo, el ticket ${ticket.number} quedo en estado "${status}".`;
+}
+
+function jouleListCampaigns() {
+  const campaigns = state.phishingCampaigns || [];
+  if (!campaigns.length) return "Todavia no hay campanas de phishing simuladas.";
+  const detail = campaigns.slice(0, 6).map((campaign) => `${campaign.name} - ${campaign.department} (${campaign.channel})`).join("\n");
+  return `${campaigns.length} campana(s):\n${detail}`;
+}
+
+function jouleDepartmentScore(raw) {
+  const departments = [...new Set(activeEmployees().map((employee) => employee.area))];
+  const lower = raw.toLowerCase();
+  const department = departments.find((item) => lower.includes(item.toLowerCase()));
+  if (!department) return `Dime el departamento. Opciones: ${departments.join(", ") || "sin departamentos activos"}.`;
+  const campaigns = (state.phishingCampaigns || []).filter((campaign) => campaign.department === department || campaign.department === "Todos");
+  if (!campaigns.length) return `${department} no tiene campanas de phishing todavia.`;
+  const sent = campaigns.reduce((sum, campaign) => sum + campaign.sent, 0);
+  const clicked = campaigns.reduce((sum, campaign) => sum + campaign.clicked, 0);
+  const reported = campaigns.reduce((sum, campaign) => sum + campaign.reported, 0);
+  const score = sent ? Math.round(100 - (clicked / sent) * 100 + (reported / sent) * 35) : 86;
+  return `Score de ${department}: ${Math.max(0, Math.min(100, score))}.`;
+}
+
+function jouleLaunchCampaignFromText(raw) {
+  const lower = raw.toLowerCase();
+  const template = state.phishingTemplates.find((item) => lower.includes(item.name.toLowerCase()));
+  if (!template) return `Dime que plantilla usar. Opciones: ${state.phishingTemplates.map((item) => item.name).join(", ")}.`;
+  const departments = ["Todos", ...new Set(activeEmployees().map((employee) => employee.area))];
+  const department = departments.find((item) => item !== "Todos" && lower.includes(item.toLowerCase())) || "Todos";
+  const channel = ["Correo", "WhatsApp", "SMS"].find((item) => lower.includes(item.toLowerCase())) || template.channel || "Correo";
+  return jouleRequestConfirmation(
+    `¿Lanzo la campana "${template.name}" por ${channel} para ${department === "Todos" ? "todos los departamentos" : department}?`,
+    async () => {
+      const name = `${template.name} - Joule ${todayIso()}`;
+      const result = await performLaunchCampaign(name, channel, template.name, department);
+      return result.ok ? `Campana lanzada a ${result.sent} objetivo(s).` : result.message;
+    }
+  );
+}
+
+function jouleRecentAudit() {
+  const items = state.audit.slice(0, 6);
+  if (!items.length) return "Sin movimientos de auditoria todavia.";
+  return items.map((item) => `${item.action}: ${item.detail} - ${item.user} (${formatTime(item.timestamp)})`).join("\n");
+}
+
+function jouleSetReportRange(raw) {
+  const lower = raw.toLowerCase();
+  const today = new Date();
+  let from;
+  let to = todayIso();
+  if (/hoy/.test(lower)) {
+    from = todayIso();
+  } else if (/semana/.test(lower)) {
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+    from = monday.toISOString().slice(0, 10);
+  } else if (/mes/.test(lower)) {
+    from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+  } else {
+    return 'Dime el rango: "reporte de hoy", "reporte de esta semana" o "reporte de este mes".';
+  }
+  state.report = { from, to, area: state.report.area };
+  byId("reportFrom").value = from;
+  byId("reportTo").value = to;
+  saveState();
+  render();
+  return `Listo, el reporte ahora cubre del ${from} al ${to}.`;
+}
+
+const JOULE_VIEW_ALIASES = {
+  tablero: ["tablero", "dashboard", "inicio", "resumen general"],
+  whatsapp: ["whatsapp", "simulador de whatsapp"],
+  empleados: ["empleados", "personal"],
+  seguridad: ["seguridad", "security assistant"],
+  phishing: ["phishing"],
+  incidencias: ["incidencias", "solicitudes"],
+  reportes: ["reportes", "reporte"],
+  configuracion: ["configuracion", "politicas", "sucursales"],
+  integraciones: ["integraciones"],
+  auditoria: ["auditoria", "bitacora"]
+};
+
+function jouleNavigateFromText(raw) {
+  const lower = raw.toLowerCase();
+  const entry = Object.entries(JOULE_VIEW_ALIASES).find(([, aliases]) => aliases.some((alias) => lower.includes(alias)));
+  if (!entry) return "Dime a donde quieres ir: tablero, empleados, seguridad, phishing, incidencias, reportes, configuracion, integraciones o auditoria.";
+  location.hash = `#${entry[0]}`;
+  return `Listo, te lleve a ${entry[0]}.`;
+}
+
 const JOULE_SKILLS = [
   { id: "saludo", test: (t) => /^(hola|buenas|hey|hi)\b/.test(t), run: () => jouleBriefing() },
   {
@@ -1515,6 +1813,9 @@ const JOULE_SKILLS = [
     }
   },
   { id: "resumen-riesgo", test: (t) => /riesgo|resumen|salud operativa|c[oó]mo (vamos|va todo)/.test(t), run: () => jouleBriefing() },
+  { id: "cerrar-ticket", test: (t) => /cierra.*ticket|cerrar.*ticket/.test(t), run: (raw) => jouleTicketActionFromText(raw, "Cerrado") },
+  { id: "revisar-ticket", test: (t) => /(revisa|pon en revision).*ticket/.test(t), run: (raw) => jouleTicketActionFromText(raw, "En revision") },
+  { id: "listar-todos-tickets", test: (t) => /todos los tickets|lista de tickets/.test(t), run: () => jouleListAllTickets() },
   {
     id: "tickets-seguridad",
     test: (t) => /ticket.*(seguridad|prioridad|abiert)/.test(t),
@@ -1558,6 +1859,25 @@ const JOULE_SKILLS = [
       return `${employee.name} (${employee.area}) - estado: ${currentWorkState(employee.id)}. Horas trabajadas hoy: ${worked}h. Vacaciones disponibles: ${employee.vacationDays}.`;
     }
   },
+  { id: "baja-empleado", test: (t) => /da de baja a\b|desactiva a\b|elimina a\b/.test(t), run: (raw) => jouleDeactivateEmployeeFromText(raw) },
+  { id: "agregar-empleado", test: (t) => /(agrega|nuevo).*empleado|empleado.*llamado/.test(t), run: (raw) => jouleAddEmployeeFromText(raw) },
+  { id: "listar-empleados", test: (t) => /cuantos empleados|lista de empleados|empleados activos|empleados de\b/.test(t), run: (raw) => jouleListEmployees(raw) },
+  { id: "agregar-sucursal", test: (t) => /(agrega|nueva).*sucursal/.test(t), run: (raw) => jouleAddBranchFromText(raw) },
+  { id: "cambiar-sucursal", test: (t) => /(cambia|selecciona|ve a|muestrame).*(la )?sucursal/.test(t), run: (raw) => jouleSwitchBranchFromText(raw) },
+  { id: "listar-sucursales", test: (t) => /que sucursales|lista de sucursales|sucursales hay/.test(t), run: () => jouleListBranches() },
+  {
+    id: "cambiar-politica",
+    test: (t) => /(cambia|pon|ajusta).*(toleran|geocerca|radio|hora[s]?\s*extra|salida olvidada|gps|selfie|evidencia)|(activa|desactiva).*(gps|selfie|evidencia)/.test(t),
+    run: (raw) => jouleUpdatePolicyFromText(raw)
+  },
+  { id: "ver-politica", test: (t) => /(cual|cuál) es la (politica|política|tolerancia)|politica actual|política actual/.test(t), run: () => jouleViewPolicy() },
+  { id: "registros-hoy", test: (t) => /cuantos registros|registros de hoy|registros hay hoy/.test(t), run: () => jouleRecordsToday() },
+  { id: "retardos-hoy", test: (t) => /quien lleg[oó] tarde|retardos de hoy|quien tiene retardo/.test(t), run: () => jouleLateToday() },
+  { id: "cerrar-alerta", test: (t) => /cierra.*alerta|cerrar.*alerta/.test(t), run: (raw) => jouleCloseAlertFromText(raw) },
+  { id: "listar-alertas", test: (t) => /que alertas hay|alertas abiertas|alertas activas/.test(t), run: () => jouleListAlerts() },
+  { id: "lanzar-campana", test: (t) => /(lanza|crea|inicia).*campan/.test(t), run: (raw) => jouleLaunchCampaignFromText(raw) },
+  { id: "score-departamento", test: (t) => /score de\b|resiliencia de\b/.test(t), run: (raw) => jouleDepartmentScore(raw) },
+  { id: "listar-campanas", test: (t) => /que campan|lista de campan|campanas hay/.test(t), run: () => jouleListCampaigns() },
   {
     id: "phishing-score",
     test: (t) => /phishing|campañ|campan/.test(t),
@@ -1568,6 +1888,8 @@ const JOULE_SKILLS = [
     }
   },
   { id: "crear-ticket", test: (t) => /(crea|abre|genera).*ticket/.test(t), run: (raw) => jouleCreateTicketFromText(raw) },
+  { id: "auditoria-reciente", test: (t) => /que ha pasado|ultimos movimientos|últimos movimientos|auditoria reciente|bitacora reciente/.test(t), run: () => jouleRecentAudit() },
+  { id: "cambiar-reporte", test: (t) => /reporte de (hoy|esta semana|este mes)/.test(t), run: (raw) => jouleSetReportRange(raw) },
   {
     id: "exportar-reporte",
     test: (t) => /(exporta|descarga).*(reporte|csv|asistencia)/.test(t),
@@ -1576,11 +1898,23 @@ const JOULE_SKILLS = [
       return "Listo, descargue el CSV de asistencia del periodo seleccionado.";
     }
   },
+  { id: "navegar", test: (t) => /llevame a|llévame a|ve al?\b|abre (la |el )?(secci[oó]n|m[oó]dulo)|muestrame la (secci[oó]n|vista)/.test(t), run: (raw) => jouleNavigateFromText(raw) },
   {
     id: "ayuda",
     test: (t) => /ayuda|que puedes hacer|qué puedes hacer|comandos/.test(t),
     run: () =>
-      "Puedo: darte el resumen de riesgo, decir quien esta en turno, listar incidencias o tickets pendientes, aprobar/rechazar solicitudes ('aprueba las vacaciones de Ana'), consultar saldo de vacaciones, resumir phishing, crear un ticket de seguridad o exportar el reporte de asistencia."
+      [
+        "Puedo ayudarte con toda la plataforma:",
+        "- Operacion: quien esta en turno, resumen de riesgo, registros y retardos de hoy.",
+        "- Incidencias: listar, aprobar/rechazar ('aprueba las vacaciones de Ana').",
+        "- Empleados: listar, agregar ('agrega un empleado llamado Luis con telefono +52...'), dar de baja.",
+        "- Sucursales: listar, cambiar de vista, agregar nuevas.",
+        "- Politicas: ver o cambiar tolerancia, geocerca, GPS y evidencia obligatoria.",
+        "- Seguridad: tickets abiertos, crear/cerrar/revisar tickets, alertas.",
+        "- Phishing: score, lanzar campanas, score por departamento.",
+        "- Auditoria y reportes: ultimos movimientos, cambiar rango del reporte, exportar CSV.",
+        "- Navegacion: 'llevame a incidencias', 've a seguridad', etc."
+      ].join("\n")
   }
 ];
 
@@ -1591,6 +1925,12 @@ function resolveJouleSkill(text) {
 }
 
 async function jouleAnswer(text) {
+  if (jouleConfirmAction) {
+    const pending = jouleConfirmAction;
+    jouleConfirmAction = null;
+    if (JOULE_CONFIRM_WORDS.test(text.toLowerCase().trim())) return await pending.run();
+    return "Cancelado. No hice ningun cambio.";
+  }
   const local = await resolveJouleSkill(text);
   if (local) return local;
   if (HAS_BACKEND && integrationHealth?.jouleConfigured) {

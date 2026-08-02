@@ -358,6 +358,19 @@ class EndToEndFlowTests(DoguiTestCase):
         self.assertEqual(approved["status"], "Aprobada")
 
 
+class JouleSnapshotTests(DoguiTestCase):
+    def test_snapshot_includes_platform_wide_data(self):
+        token, _ = self.login()
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        self.assertEqual(status, 200)
+        snapshot = srv.joule_snapshot(state)
+        self.assertIn("empleados", snapshot)
+        self.assertIn("sucursales", snapshot)
+        self.assertIn("politica", snapshot)
+        self.assertGreaterEqual(len(snapshot["sucursales"]), 1)
+        self.assertEqual(snapshot["politica"]["tolerance"], state["policy"]["tolerance"])
+
+
 class TrainingPageEscapingTests(unittest.TestCase):
     def test_title_and_body_are_escaped(self):
         html = srv.training_page('<script>alert(1)</script>', 'body & "quotes"')

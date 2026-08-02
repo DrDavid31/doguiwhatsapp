@@ -178,18 +178,18 @@ Si un proveedor no esta configurado, la campana corre en modo simulado: marca ob
 Inspirado en SAP Joule: un copiloto conversacional embebido, con "skills" que consultan y accionan sobre los datos reales del panel (no un chatbot generico). Se abre con el boton flotante (esquina inferior derecha) desde cualquier vista.
 
 - Al abrirlo, Joule da un briefing con lo importante del momento: gente en turno, incidencias pendientes, tickets de prioridad alta y alertas activas.
-- Las skills funcionan siempre, sin backend ni API key, igual que el resto de la demo (GitHub Pages incluido):
-  - "Quien esta trabajando ahora"
-  - "Resume el riesgo de hoy" / "Como va todo"
-  - "Que incidencias estan pendientes"
-  - "Aprueba las vacaciones de Ana Lopez" / "Rechaza el permiso de Carlos Mendez"
-  - "Cuantos dias de vacaciones tiene Sofia Ramirez"
-  - "Estado de Ana Lopez" (horas trabajadas, estado actual)
-  - "Cuantos tickets de prioridad alta hay abiertos"
-  - "Crea un ticket por link sospechoso para Carlos Mendez"
-  - "Como va el score de phishing"
-  - "Exporta el reporte de asistencia"
-- Las acciones (aprobar/rechazar incidencias, crear tickets, exportar) usan las mismas funciones que los botones del panel, asi que quedan registradas en auditoria y sincronizadas con el backend igual que cualquier otra accion.
+- Las skills funcionan siempre, sin backend ni API key, igual que el resto de la demo (GitHub Pages incluido). Cubren toda la plataforma, no solo asistencia:
+  - **Operacion**: "Quien esta trabajando ahora", "Resume el riesgo de hoy", "Cuantos registros hay hoy", "Quien llego tarde hoy".
+  - **Incidencias**: "Que incidencias estan pendientes", "Aprueba las vacaciones de Ana Lopez", "Rechaza el permiso de Carlos Mendez".
+  - **Empleados**: "Cuantos empleados activos hay", "Empleados de Operaciones", "Agrega un empleado llamado Luis Perez con telefono +52 55 0000 0000 area Ventas", "Da de baja a Carlos Mendez" (pide confirmacion antes de ejecutar).
+  - **Sucursales**: "Que sucursales hay", "Cambia a la sucursal Planta Norte", "Agrega la sucursal Sur en 19.3, -99.2".
+  - **Politicas**: "Cual es la politica actual", "Cambia la tolerancia a 15 minutos", "Desactiva el GPS obligatorio", "Activa la evidencia obligatoria".
+  - **Seguridad**: "Cuantos tickets de prioridad alta hay abiertos", "Todos los tickets", "Crea un ticket por link sospechoso para Carlos Mendez", "Cierra el ticket DG-0001", "Pon en revision el ticket DG-0002", "Que alertas hay", "Cierra la alerta de Ana Lopez".
+  - **Phishing**: "Como va el score de phishing", "Que campanas hay", "Lanza una campana de phishing con la plantilla Aviso SAT para Ventas" (pide confirmacion), "Score de Ventas".
+  - **Auditoria y reportes**: "Que ha pasado hoy", "Reporte de esta semana", "Exporta el reporte de asistencia".
+  - **Navegacion**: "Llevame a incidencias", "Ve a seguridad", "Abre la seccion de auditoria".
+- Las acciones potencialmente destructivas (dar de baja empleados, lanzar campanas de phishing) piden confirmacion conversacional: Joule pregunta y solo ejecuta si la siguiente respuesta es "si"/"confirmar"/"dale"/"ok"; cualquier otra cosa cancela sin hacer cambios.
+- Todas las acciones usan las mismas funciones que los botones del panel (o sus mismos endpoints dedicados), asi que quedan registradas en auditoria y sincronizadas con el backend igual que cualquier otra accion.
 - Capa opcional de lenguaje libre: si la skill local no entiende la pregunta y el backend tiene `ANTHROPIC_API_KEY` configurada, la pregunta se manda a `/api/joule/query`, que arma un snapshot de los datos reales (incidencias, tickets, alertas, campanas) y se lo pasa a un modelo de Claude para responder en espanol, con instruccion explicita de no inventar datos fuera del snapshot. Sin la API key configurada, Joule sigue funcionando por completo con las skills deterministas.
 - Variables relevantes en `.env`: `ANTHROPIC_API_KEY` (vacio = capa generativa desactivada) y `JOULE_MODEL` (modelo a usar, por defecto `claude-sonnet-5`).
 
