@@ -418,6 +418,20 @@
           </form>
           <div id="branchList" class="stack"></div>
         </article>
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Seguridad de la cuenta</h2>
+              <p>Cambia tu contrasena. Al guardar se cierran todas tus sesiones activas.</p>
+            </div>
+          </div>
+          <form id="changePasswordForm" class="form">
+            <input id="currentPassword" type="password" placeholder="Contrasena actual" autocomplete="current-password" required />
+            <input id="newPassword" type="password" placeholder="Contrasena nueva (minimo 8 caracteres)" autocomplete="new-password" required minlength="8" />
+            <p id="changePasswordError" class="login-error" hidden></p>
+            <button class="primary" type="submit">Cambiar contrasena</button>
+          </form>
+        </article>
       </section>
 
       <section id="integraciones" class="layout">

@@ -622,7 +622,7 @@ def seed_auth(con):
     )
 
 
-def import_state(con, state, replace=False):
+def import_state(con, state, replace=False, company_id=None):
     if replace:
         for table in [
             "training_assignments",
@@ -651,7 +651,10 @@ def import_state(con, state, replace=False):
         )
 
     policy = {**DEFAULT_POLICY, **state.get("policy", {})}
-    company_id = state.get("selectedCompanyId", "co-demo")
+    # company_id is pinned to the authenticated caller's own company when provided
+    # (real /api/state saves); only the trusted startup-seeding path lets the
+    # payload itself pick a company_id, since that path has no client input.
+    company_id = company_id or state.get("selectedCompanyId", "co-demo")
     con.execute(
         """
         INSERT OR REPLACE INTO policies
@@ -932,14 +935,16 @@ def get_security_ticket(con, ticket_id):
     }
 
 
-def list_security_tickets(con):
+def list_security_tickets(con, company_id):
     rows = con.execute(
         """
         SELECT st.id
         FROM security_tickets st
+        WHERE st.company_id = ?
         ORDER BY st.created_at DESC
         LIMIT 300
-        """
+        """,
+        (company_id,),
     )
     return [get_security_ticket(con, row["id"]) for row in rows]
 
@@ -959,8 +964,18 @@ def get_security_alert(con, alert_id):
     }
 
 
-def list_security_alerts(con):
-    rows = con.execute("SELECT id FROM security_alerts ORDER BY created_at DESC LIMIT 200")
+def list_security_alerts(con, company_id):
+    rows = con.execute(
+        """
+        SELECT sa.id
+        FROM security_alerts sa
+        JOIN security_tickets st ON st.id = sa.ticket_id
+        WHERE st.company_id = ?
+        ORDER BY sa.created_at DESC
+        LIMIT 200
+        """,
+        (company_id,),
+    )
     return [get_security_alert(con, row["id"]) for row in rows]
 
 
@@ -989,7 +1004,7 @@ def calculate_resilience_score(sent, clicked, reported):
     return max(0, min(100, 100 - click_rate + report_rate))
 
 
-def list_phishing_campaigns(con):
+def list_phishing_campaigns(con, company_id):
     return [
         {
             "id": row["id"],
@@ -1008,22 +1023,22 @@ def list_phishing_campaigns(con):
             "launchedAt": row["launched_at"],
             "monthlyReport": row_json(row["monthly_report_json"], {}),
         }
-        for row in con.execute("SELECT * FROM phishing_campaigns ORDER BY created_at DESC LIMIT 200")
+        for row in con.execute("SELECT * FROM phishing_campaigns WHERE company_id = ? ORDER BY created_at DESC LIMIT 200", (company_id,))
     ]
 
 
-def build_state(con):
-    selected_company_id = get_meta(con, "selected_company_id", "co-demo")
+def build_state(con, company_id):
+    selected_company_id = company_id
     selected_branch_id = get_meta(con, "selected_branch_id", "br-centro")
     report = row_json(get_meta(con, "report", "{}"), {})
     if not report:
         today = datetime.now().date().isoformat()
         report = {"from": today, "to": today, "area": "Todas"}
 
-    companies = [dict(row) for row in con.execute("SELECT id, name FROM companies ORDER BY name")]
+    companies = [dict(row) for row in con.execute("SELECT id, name FROM companies WHERE id = ? ORDER BY name", (company_id,))]
     branches = [
         {"id": row["id"], "companyId": row["company_id"], "name": row["name"], "lat": row["lat"], "lng": row["lng"]}
-        for row in con.execute("SELECT * FROM branches WHERE active = 1 ORDER BY name")
+        for row in con.execute("SELECT * FROM branches WHERE active = 1 AND company_id = ? ORDER BY name", (company_id,))
     ]
     policy_row = con.execute("SELECT * FROM policies WHERE company_id = ?", (selected_company_id,)).fetchone()
     policy = DEFAULT_POLICY.copy()
@@ -1050,7 +1065,7 @@ def build_state(con):
             "vacationDays": row["vacation_days"],
             "active": bool(row["active"]),
         }
-        for row in con.execute("SELECT * FROM employees ORDER BY active DESC, name")
+        for row in con.execute("SELECT * FROM employees WHERE company_id = ? ORDER BY active DESC, name", (company_id,))
     ]
     records = [
         {
@@ -1074,8 +1089,10 @@ def build_state(con):
             """
             SELECT r.*, e.name AS employee_name
             FROM records r JOIN employees e ON e.id = r.employee_id
+            WHERE e.company_id = ?
             ORDER BY r.timestamp DESC LIMIT 500
-            """
+            """,
+            (company_id,),
         )
     ]
     issues = [
@@ -1094,8 +1111,10 @@ def build_state(con):
             """
             SELECT i.*, e.name AS employee_name
             FROM issues i JOIN employees e ON e.id = i.employee_id
+            WHERE e.company_id = ?
             ORDER BY i.timestamp DESC
-            """
+            """,
+            (company_id,),
         )
     ]
     alerts = [
@@ -1113,8 +1132,10 @@ def build_state(con):
             """
             SELECT a.*, e.name AS employee_name
             FROM alerts a LEFT JOIN employees e ON e.id = a.employee_id
+            WHERE e.company_id = ?
             ORDER BY a.timestamp DESC
-            """
+            """,
+            (company_id,),
         )
     ]
     audit = [
@@ -1123,7 +1144,15 @@ def build_state(con):
     ]
     chat = [
         {"id": row["id"], "employeeName": row["employee_name"], "message": row["message"], "response": row["response"], "timestamp": row["timestamp"]}
-        for row in con.execute("SELECT * FROM chat ORDER BY timestamp DESC LIMIT 100")
+        for row in con.execute(
+            """
+            SELECT c.*
+            FROM chat c JOIN employees e ON e.id = c.employee_id
+            WHERE e.company_id = ?
+            ORDER BY c.timestamp DESC LIMIT 100
+            """,
+            (company_id,),
+        )
     ]
     return {
         "companies": companies,
@@ -1137,21 +1166,21 @@ def build_state(con):
         "alerts": alerts,
         "audit": audit,
         "chat": chat,
-        "securityTickets": list_security_tickets(con),
-        "securityAlerts": list_security_alerts(con),
+        "securityTickets": list_security_tickets(con, company_id),
+        "securityAlerts": list_security_alerts(con, company_id),
         "phishingTemplates": list_phishing_templates(con),
-        "phishingCampaigns": list_phishing_campaigns(con),
+        "phishingCampaigns": list_phishing_campaigns(con, company_id),
         "report": report,
         "version": int(get_meta(con, "state_version", "0")),
     }
 
 
-def save_state(state, expected_version=None):
+def save_state(state, expected_version=None, company_id=None):
     with connect() as con:
         current_version = int(get_meta(con, "state_version", "0"))
         if expected_version is not None and int(expected_version) != current_version:
             return {"conflict": True, "version": current_version}
-        import_state(con, state, replace=True)
+        import_state(con, state, replace=True, company_id=company_id)
         seed_phishing_templates(con)
         migrate_product_meta(con)
         new_version = current_version + 1
@@ -1698,14 +1727,20 @@ def recalculate_campaign_metrics(con, campaign_id):
 
 
 def resolve_phishing_target(con, campaign_id, target_value):
+    # Matches on the target's own id (what click_url/report_url/training_url actually
+    # embed, see render_phishing_body) or one of its dedicated secret tokens.
+    # employee_id is intentionally NOT accepted here: unlike the other fields, it is
+    # not part of any delivered link and is disclosed to any authenticated user via
+    # GET /api/employees, so accepting it would let someone fabricate a valid tracking
+    # hit for an employee who was never actually sent this campaign's message.
     return con.execute(
         """
         SELECT * FROM phishing_targets
         WHERE campaign_id = ?
-          AND (id = ? OR employee_id = ? OR click_token = ? OR report_token = ? OR training_token = ?)
+          AND (id = ? OR click_token = ? OR report_token = ? OR training_token = ?)
         LIMIT 1
         """,
-        (campaign_id, target_value, target_value, target_value, target_value, target_value),
+        (campaign_id, target_value, target_value, target_value, target_value),
     ).fetchone()
 
 
@@ -1741,9 +1776,12 @@ def track_phishing_event(con, campaign_id, target_value, event, channel="Landing
     return con.execute("SELECT * FROM phishing_targets WHERE id = ?", (target["id"],)).fetchone()
 
 
-def build_monthly_phishing_report(con, month=None):
+def build_monthly_phishing_report(con, company_id, month=None):
     month = month or datetime.now().strftime("%Y-%m")
-    rows = con.execute("SELECT * FROM phishing_campaigns WHERE substr(created_at, 1, 7) = ? ORDER BY created_at DESC", (month,)).fetchall()
+    rows = con.execute(
+        "SELECT * FROM phishing_campaigns WHERE company_id = ? AND substr(created_at, 1, 7) = ? ORDER BY created_at DESC",
+        (company_id, month),
+    ).fetchall()
     totals = {"sent": 0, "clicked": 0, "reported": 0, "trained": 0}
     departments = {}
     campaigns = []
@@ -1945,55 +1983,75 @@ class Handler(SimpleHTTPRequestHandler):
             user = self.current_user()
             return self.send_json({"user": public_user(user) if user else None})
         if parsed.path == "/api/state":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                return self.send_json(build_state(con))
+                return self.send_json(build_state(con, user["company_id"]))
         if parsed.path == "/api/employees":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                return self.send_json(build_state(con)["employees"])
+                return self.send_json(build_state(con, user["company_id"])["employees"])
         if parsed.path == "/api/records":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                return self.send_json(build_state(con)["records"])
+                return self.send_json(build_state(con, user["company_id"])["records"])
         if parsed.path == "/api/issues":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                return self.send_json(build_state(con)["issues"])
+                return self.send_json(build_state(con, user["company_id"])["issues"])
         if parsed.path == "/api/media":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                rows = [dict(row) for row in con.execute("SELECT * FROM media_attachments ORDER BY created_at DESC LIMIT 200")]
+                rows = [
+                    dict(row)
+                    for row in con.execute(
+                        """
+                        SELECT m.*
+                        FROM media_attachments m JOIN employees e ON e.id = m.employee_id
+                        WHERE e.company_id = ?
+                        ORDER BY m.created_at DESC LIMIT 200
+                        """,
+                        (user["company_id"],),
+                    )
+                ]
             return self.send_json(rows)
         if parsed.path == "/api/security/tickets":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                return self.send_json(list_security_tickets(con))
+                return self.send_json(list_security_tickets(con, user["company_id"]))
         if parsed.path == "/api/security/alerts":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                return self.send_json(list_security_alerts(con))
+                return self.send_json(list_security_alerts(con, user["company_id"]))
         if parsed.path == "/api/phishing/templates":
             with connect() as con:
                 return self.send_json(list_phishing_templates(con))
         if parsed.path == "/api/phishing/campaigns":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             with connect() as con:
-                return self.send_json(list_phishing_campaigns(con))
+                return self.send_json(list_phishing_campaigns(con, user["company_id"]))
         if parsed.path == "/api/phishing/reports/monthly":
-            if not self.require_user():
+            user = self.require_user()
+            if not user:
                 return
             query = urllib.parse.parse_qs(parsed.query)
             with connect() as con:
-                return self.send_json(build_monthly_phishing_report(con, query.get("month", [None])[0]))
+                return self.send_json(build_monthly_phishing_report(con, user["company_id"], query.get("month", [None])[0]))
         tracking_parts = [urllib.parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
         if len(tracking_parts) == 3 and tracking_parts[0] in {"t", "r", "training"}:
             action, campaign_id, target_value = tracking_parts
@@ -2029,10 +2087,12 @@ class Handler(SimpleHTTPRequestHandler):
             user = self.require_user()
             if not user:
                 return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
-            result = save_state(payload, payload.get("_version"))
+            result = save_state(payload, payload.get("_version"), user["company_id"])
             if result["conflict"]:
                 return self.send_json({"error": "conflict", "version": result["version"]}, 409)
             return self.send_json({"ok": True, "version": result["version"]})
@@ -2062,14 +2122,37 @@ class Handler(SimpleHTTPRequestHandler):
             secure_flag = " Secure;" if PUBLIC_BASE_URL.startswith("https://") else ""
             return self.send_json({"ok": True}, extra_headers={"Set-Cookie": f"checador_session=; HttpOnly;{secure_flag} SameSite=Lax; Path=/; Max-Age=0"})
 
-        if parsed.path == "/api/state":
+        if parsed.path == "/api/change-password":
             user = self.require_user()
             if not user:
                 return
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
-            result = save_state(payload, payload.get("_version"))
+            current_password = payload.get("currentPassword", "")
+            new_password = payload.get("newPassword", "")
+            if not verify_password(current_password, user["password_salt"], user["password_hash"]):
+                return self.send_json({"error": "invalid_current_password"}, 401)
+            if len(new_password) < 8:
+                return self.send_json({"error": "weak_password"}, 400)
+            salt, digest = hash_password(new_password)
+            with connect() as con:
+                con.execute("UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?", (salt, digest, user["id"]))
+                con.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+                add_audit(con, "Contrasena actualizada", user["email"], user["name"], user["role"])
+            secure_flag = " Secure;" if PUBLIC_BASE_URL.startswith("https://") else ""
+            return self.send_json({"ok": True}, extra_headers={"Set-Cookie": f"checador_session=; HttpOnly;{secure_flag} SameSite=Lax; Path=/; Max-Age=0"})
+
+        if parsed.path == "/api/state":
+            user = self.require_user()
+            if not user:
+                return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
+            _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
+            result = save_state(payload, payload.get("_version"), user["company_id"])
             if result["conflict"]:
                 return self.send_json({"error": "conflict", "version": result["version"]}, 409)
             return self.send_json({"ok": True, "version": result["version"]})
@@ -2078,11 +2161,15 @@ class Handler(SimpleHTTPRequestHandler):
             user = self.require_user()
             if not user:
                 return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
             with connect() as con:
                 employee_id = upsert_employee(con, payload, user["company_id"])
+                if employee_id is None:
+                    return self.send_json({"error": "forbidden"}, 403)
                 add_audit(con, "Empleado guardado", payload.get("name", employee_id), user["name"], user["role"])
             return self.send_json({"ok": True, "id": employee_id})
 
@@ -2283,7 +2370,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not ANTHROPIC_API_KEY:
                 return self.send_json({"available": False})
             with connect() as con:
-                snapshot = joule_snapshot(build_state(con))
+                snapshot = joule_snapshot(build_state(con, user["company_id"]))
             try:
                 reply = call_joule_llm(message, snapshot, payload.get("viewContext"))
             except Exception as exc:
@@ -2335,7 +2422,12 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             employee_id = parsed.path.split("/")[3]
             with connect() as con:
-                con.execute("UPDATE employees SET active = 0 WHERE id = ?", (employee_id,))
+                cursor = con.execute(
+                    "UPDATE employees SET active = 0 WHERE id = ? AND company_id = ?",
+                    (employee_id, user["company_id"]),
+                )
+                if cursor.rowcount == 0:
+                    return self.send_json({"error": "employee_not_found"}, 404)
                 add_audit(con, "Empleado dado de baja", employee_id, user["name"], user["role"])
             return self.send_json({"ok": True})
         return self.send_json({"error": "not found"}, 404)
@@ -2343,6 +2435,10 @@ class Handler(SimpleHTTPRequestHandler):
 
 def upsert_employee(con, payload, company_id):
     employee_id = payload.get("id") or make_id("emp")
+    if payload.get("id"):
+        existing = con.execute("SELECT company_id FROM employees WHERE id = ?", (employee_id,)).fetchone()
+        if existing and existing["company_id"] != company_id:
+            return None
     branch_id = payload.get("branchId") or get_meta(con, "selected_branch_id", "")
     if not branch_id or not con.execute("SELECT 1 FROM branches WHERE id = ? AND company_id = ?", (branch_id, company_id)).fetchone():
         row = con.execute("SELECT id FROM branches WHERE company_id = ? AND active = 1 ORDER BY name LIMIT 1", (company_id,)).fetchone()
@@ -2404,6 +2500,10 @@ def print_security_warnings():
         print("AVISO: WHATSAPP_VERIFY_TOKEN sigue en su valor por defecto. Cambialo antes de exponer este servidor.")
     if not PUBLIC_BASE_URL.startswith("https://"):
         print("AVISO: PUBLIC_BASE_URL no apunta a un dominio https. La cookie de sesion no se marcara como Secure.")
+    with connect() as con:
+        admin_row = con.execute("SELECT password_salt, password_hash FROM users WHERE email = 'admin@empresa.mx'").fetchone()
+    if admin_row and verify_password("admin123", admin_row["password_salt"], admin_row["password_hash"]):
+        print("AVISO: La cuenta admin@empresa.mx sigue con la contrasena por defecto (admin123). Cambiala con POST /api/change-password antes de exponer este servidor.")
 
 
 if __name__ == "__main__":

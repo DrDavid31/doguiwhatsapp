@@ -2250,6 +2250,42 @@ byId("branchForm").addEventListener("submit", async (event) => {
   render();
 });
 
+byId("changePasswordForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const errorBox = byId("changePasswordError");
+  errorBox.hidden = true;
+  const currentPassword = byId("currentPassword").value;
+  const newPassword = byId("newPassword").value;
+
+  if (!HAS_BACKEND) {
+    errorBox.hidden = false;
+    errorBox.textContent = "Cambiar contrasena requiere el backend real (corre run-server.ps1).";
+    return;
+  }
+  if (newPassword.length < 8) {
+    errorBox.hidden = false;
+    errorBox.textContent = "La contrasena nueva debe tener al menos 8 caracteres.";
+    return;
+  }
+
+  const response = await apiFetch("/api/change-password", {
+    method: "POST",
+    body: { currentPassword, newPassword }
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    errorBox.hidden = false;
+    errorBox.textContent = payload.error === "invalid_current_password" ? "La contrasena actual no es correcta." : "No se pudo cambiar la contrasena.";
+    return;
+  }
+
+  event.target.reset();
+  session = null;
+  localStorage.removeItem(SESSION_KEY);
+  alert("Contrasena actualizada. Vuelve a iniciar sesion.");
+  render();
+});
+
 byId("reportFilters").addEventListener("submit", (event) => {
   event.preventDefault();
   const from = byId("reportFrom").value || todayIso();

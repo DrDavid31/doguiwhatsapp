@@ -8,7 +8,9 @@ project's zero-dependency style: only stdlib.
 Run with:  python -m unittest discover -s tests -v
 """
 
+import contextlib
 import http.client
+import io
 import json
 import os
 import shutil
@@ -76,15 +78,22 @@ class DoguiTestCase(unittest.TestCase):
         token = set_cookie.split("checador_session=", 1)[1].split(";", 1)[0]
         return token, payload["user"]
 
-    def create_user(self, email, role, password="test1234"):
+    def create_user(self, email, role, password="test1234", company_id="co-demo"):
         salt, digest = srv.hash_password(password)
         with srv.connect() as con:
             con.execute(
                 """
                 INSERT INTO users (id, company_id, email, name, role, password_salt, password_hash, active, created_at)
-                VALUES (?, 'co-demo', ?, ?, ?, ?, ?, 1, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
-                (f"usr-{email}", email, f"Test {role}", role, salt, digest, srv.utc_now()),
+                (f"usr-{email}", company_id, email, f"Test {role}", role, salt, digest, srv.utc_now()),
+            )
+
+    def create_company(self, company_id, name):
+        with srv.connect() as con:
+            con.execute(
+                "INSERT INTO companies (id, name, created_at) VALUES (?, ?, ?)",
+                (company_id, name, srv.utc_now()),
             )
 
 
@@ -232,6 +241,203 @@ class RoleGatingTests(DoguiTestCase):
 
         status, _, _ = self.request("POST", "/api/branches", {"name": "X", "lat": 1, "lng": 1}, cookie=token)
         self.assertEqual(status, 403)
+
+    def test_empleado_role_is_blocked_from_state_and_employee_writes(self):
+        self.create_user("empleado3@test.mx", "Empleado")
+        token, _ = self.login("empleado3@test.mx", "test1234")
+
+        status, _, _ = self.request("PUT", "/api/state", {"employees": []}, cookie=token)
+        self.assertEqual(status, 403)
+
+        status, _, _ = self.request("POST", "/api/employees", {"name": "X", "phone": "+521"}, cookie=token)
+        self.assertEqual(status, 403)
+
+    def test_dueno_role_can_save_state_and_create_employees(self):
+        token, _ = self.login()
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        status, payload, _ = self.request("PUT", "/api/state", {**state, "_version": state["version"]}, cookie=token)
+        self.assertEqual(status, 200, payload)
+
+        status, payload, _ = self.request("POST", "/api/employees", {"name": "Nuevo", "phone": "+521"}, cookie=token)
+        self.assertEqual(status, 200, payload)
+
+
+class TenantIsolationTests(DoguiTestCase):
+    def setUp(self):
+        super().setUp()
+        self.create_company("co-other", "Otra Empresa")
+        self.create_user("owner@other.mx", "Dueno", company_id="co-other")
+        with srv.connect() as con:
+            con.execute(
+                "INSERT INTO branches (id, company_id, name, lat, lng, active) VALUES ('br-other', 'co-other', 'Sucursal Otra', 0, 0, 1)"
+            )
+            con.execute(
+                """
+                INSERT INTO employees (id, company_id, branch_id, name, phone, phone_normalized, area, mode, role, start_time, end_time, vacation_days, active)
+                VALUES ('emp-other', 'co-other', 'br-other', 'Empleado Otro', '+52 55 0000 0001', '525500000001', 'General', 'Presencial', 'Empleado', '09:00', '18:00', 5, 1)
+                """
+            )
+
+    def test_employee_listing_is_scoped_to_own_company(self):
+        token, _ = self.login()  # Dueno of co-demo
+        status, employees, _ = self.request("GET", "/api/employees", cookie=token)
+        self.assertEqual(status, 200)
+        names = [e["name"] for e in employees]
+        self.assertNotIn("Empleado Otro", names)
+
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        self.assertNotIn("Empleado Otro", [e["name"] for e in state["employees"]])
+        self.assertNotIn("Otra Empresa", [c["name"] for c in state["companies"]])
+        self.assertNotIn("Sucursal Otra", [b["name"] for b in state["branches"]])
+
+    def test_cannot_overwrite_another_companys_employee(self):
+        token, _ = self.login()  # Dueno of co-demo
+        status, payload, _ = self.request(
+            "POST", "/api/employees", {"id": "emp-other", "name": "Hijacked", "phone": "+52 55 9999 9999"}, cookie=token
+        )
+        self.assertEqual(status, 403, payload)
+
+        with srv.connect() as con:
+            row = con.execute("SELECT name, phone FROM employees WHERE id = 'emp-other'").fetchone()
+        self.assertEqual(row["name"], "Empleado Otro")
+        self.assertEqual(row["phone"], "+52 55 0000 0001")
+
+    def test_cannot_deactivate_another_companys_employee(self):
+        token, _ = self.login()  # Dueno of co-demo
+        status, _, _ = self.request("DELETE", "/api/employees/emp-other", cookie=token)
+        self.assertEqual(status, 404)
+
+        with srv.connect() as con:
+            row = con.execute("SELECT active FROM employees WHERE id = 'emp-other'").fetchone()
+        self.assertEqual(row["active"], 1)
+
+    def test_state_save_cannot_inject_data_into_another_company(self):
+        token, _ = self.login()  # Dueno of co-demo
+        status, state, _ = self.request("GET", "/api/state", cookie=token)
+        malicious = {**state, "_version": state["version"], "selectedCompanyId": "co-other", "policy": {**state["policy"], "tolerance": 999}}
+        status, payload, _ = self.request("PUT", "/api/state", malicious, cookie=token)
+        self.assertEqual(status, 200, payload)
+
+        with srv.connect() as con:
+            other_policy = con.execute("SELECT tolerance FROM policies WHERE company_id = 'co-other'").fetchone()
+            own_policy = con.execute("SELECT tolerance FROM policies WHERE company_id = 'co-demo'").fetchone()
+        self.assertIsNone(other_policy, "save must not be able to write policy for a company the caller doesn't belong to")
+        self.assertEqual(own_policy["tolerance"], 999)
+
+
+class ChangePasswordTests(DoguiTestCase):
+    def test_change_password_requires_current_password(self):
+        token, _ = self.login()
+        status, payload, _ = self.request(
+            "POST", "/api/change-password", {"currentPassword": "wrong", "newPassword": "una-clave-nueva-larga"}, cookie=token
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["error"], "invalid_current_password")
+
+    def test_change_password_rejects_short_passwords(self):
+        token, _ = self.login()
+        status, payload, _ = self.request(
+            "POST", "/api/change-password", {"currentPassword": "admin123", "newPassword": "short"}, cookie=token
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "weak_password")
+
+    def test_change_password_succeeds_and_rotates_credential(self):
+        token, _ = self.login()
+        status, payload, _ = self.request(
+            "POST", "/api/change-password", {"currentPassword": "admin123", "newPassword": "una-clave-nueva-larga"}, cookie=token
+        )
+        self.assertEqual(status, 200, payload)
+
+        status, payload, _ = self.request("POST", "/api/login", {"email": "admin@empresa.mx", "password": "admin123"})
+        self.assertEqual(status, 401, "old password must stop working")
+
+        status, payload, _ = self.request(
+            "POST", "/api/login", {"email": "admin@empresa.mx", "password": "una-clave-nueva-larga"}
+        )
+        self.assertEqual(status, 200, payload)
+
+    def test_change_password_invalidates_existing_sessions(self):
+        token, _ = self.login()
+        status, _, _ = self.request(
+            "POST", "/api/change-password", {"currentPassword": "admin123", "newPassword": "una-clave-nueva-larga"}, cookie=token
+        )
+        self.assertEqual(status, 200)
+
+        status, _, _ = self.request("GET", "/api/state", cookie=token)
+        self.assertEqual(status, 401, "the old session token should be revoked after a password change")
+
+
+class SecurityWarningsTests(DoguiTestCase):
+    def test_warns_when_default_admin_password_is_unchanged(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            srv.print_security_warnings()
+        self.assertIn("admin123", buffer.getvalue())
+
+    def test_no_warning_after_password_is_changed(self):
+        with srv.connect() as con:
+            row = con.execute("SELECT id FROM users WHERE email = 'admin@empresa.mx'").fetchone()
+            salt, digest = srv.hash_password("una-clave-nueva-larga")
+            con.execute("UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?", (salt, digest, row["id"]))
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            srv.print_security_warnings()
+        self.assertNotIn("admin123", buffer.getvalue())
+
+
+class PhishingTrackingTests(DoguiTestCase):
+    def launch_campaign(self, token):
+        status, payload, _ = self.request(
+            "POST",
+            "/api/phishing/campaigns",
+            {"name": "Prueba", "channel": "Correo", "template": "Aviso SAT", "department": "Todos", "launchNow": True},
+            cookie=token,
+        )
+        self.assertEqual(status, 200, payload)
+        with srv.connect() as con:
+            target = con.execute(
+                "SELECT * FROM phishing_targets WHERE campaign_id = ? LIMIT 1", (payload["campaign"]["id"],)
+            ).fetchone()
+        return payload["campaign"]["id"], target
+
+    def test_real_target_id_still_tracks_a_click(self):
+        token, _ = self.login()
+        campaign_id, target = self.launch_campaign(token)
+        status, body = self._get_raw(f"/t/{campaign_id}/{target['id']}")
+        self.assertEqual(status, 200)
+        self.assertIn(b"registrado", body)
+
+        with srv.connect() as con:
+            row = con.execute("SELECT clicked_at FROM phishing_targets WHERE id = ?", (target["id"],)).fetchone()
+        self.assertIsNotNone(row["clicked_at"])
+
+    def test_click_token_still_tracks_a_click(self):
+        token, _ = self.login()
+        campaign_id, target = self.launch_campaign(token)
+        status, body = self._get_raw(f"/t/{campaign_id}/{target['click_token']}")
+        self.assertEqual(status, 200)
+        self.assertIn(b"registrado", body)
+
+    def test_employee_id_alone_does_not_track_a_click(self):
+        token, _ = self.login()
+        campaign_id, target = self.launch_campaign(token)
+        status, body = self._get_raw(f"/t/{campaign_id}/{target['employee_id']}")
+        self.assertEqual(status, 404)
+        self.assertIn(b"no encontro", body.lower())
+
+        with srv.connect() as con:
+            row = con.execute("SELECT clicked_at FROM phishing_targets WHERE id = ?", (target["id"],)).fetchone()
+        self.assertIsNone(row["clicked_at"], "employee_id must not be able to fake a click")
+
+    def _get_raw(self, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", path)
+        response = conn.getresponse()
+        raw = response.read()
+        conn.close()
+        return response.status, raw
 
 
 class PolicyBranchAlertTests(DoguiTestCase):
