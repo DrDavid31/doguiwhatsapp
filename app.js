@@ -1345,6 +1345,18 @@ function renderAudit() {
   `).join("") || emptyState("Sin movimientos de auditoria.");
 }
 
+function jouleUpdateBadge() {
+  const badge = byId("jouleBadge");
+  if (!session) {
+    badge.hidden = true;
+    return;
+  }
+  const metrics = getDashboardMetrics();
+  const pending = metrics.openIssues + metrics.highSecurityTickets + metrics.openAlerts;
+  badge.textContent = pending > 9 ? "9+" : String(pending);
+  badge.hidden = pending === 0 || jouleOpen;
+}
+
 function renderSession() {
   byId("loginScreen").classList.toggle("hidden", Boolean(session));
   byId("jouleLauncher").classList.toggle("hidden", !session);
@@ -1353,6 +1365,7 @@ function renderSession() {
   const company = state.companies.find((item) => item.id === state.selectedCompanyId) || state.companies[0] || { name: "DOGUI" };
   byId("sessionLabel").textContent = session ? `${company.name} - ${session.user} - ${session.role} - ${mode}` : `${company.name} - ${mode}`;
   byId("backendWarning").hidden = !(HAS_BACKEND && backendUnreachable);
+  jouleUpdateBadge();
 }
 
 function render() {
@@ -1418,13 +1431,64 @@ function currentJouleView() {
   return (location.hash || "#tablero").replace("#", "");
 }
 
-function findEmployeeForQuery(rawText) {
+// Memoria conversacional corta: el ultimo empleado/ticket mencionado explicitamente,
+// para que preguntas de seguimiento ("y cuantos dias tiene?") no requieran repetir el nombre.
+let jouleLastEmployeeId = null;
+let jouleLastTicketId = null;
+
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const rows = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) rows[i][0] = i;
+  for (let j = 0; j <= b.length; j++) rows[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      rows[i][j] = a[i - 1] === b[j - 1] ? rows[i - 1][j - 1] : 1 + Math.min(rows[i - 1][j - 1], rows[i - 1][j], rows[i][j - 1]);
+    }
+  }
+  return rows[a.length][b.length];
+}
+
+function findEmployeeFuzzy(text, pool) {
+  const words = text.split(/[^a-zA-ZÀ-ÿ]+/).filter((word) => word.length > 3);
+  let best = null;
+  let bestDistance = 2;
+  pool.forEach((employee) => {
+    employee.name
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((nameWord) => nameWord.length > 3)
+      .forEach((nameWord) => {
+        words.forEach((word) => {
+          const distance = levenshtein(word, nameWord);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = employee;
+          }
+        });
+      });
+  });
+  return best;
+}
+
+function findEmployeeForQuery(rawText, { useContext = true } = {}) {
   const text = rawText.toLowerCase();
   const active = state.employees.filter((employee) => employee.active);
-  return (
+  const explicit =
     active.find((employee) => text.includes(employee.name.toLowerCase())) ||
-    active.find((employee) => text.includes(employee.name.toLowerCase().split(" ")[0]))
-  );
+    active.find((employee) => text.includes(employee.name.toLowerCase().split(" ")[0])) ||
+    findEmployeeFuzzy(text, active);
+  if (explicit) {
+    jouleLastEmployeeId = explicit.id;
+    return explicit;
+  }
+  if (useContext && jouleLastEmployeeId) {
+    const remembered = employeeById(jouleLastEmployeeId);
+    if (remembered && remembered.active) return remembered;
+  }
+  return null;
 }
 
 function findPendingIssueForEmployee(employee, type) {
@@ -1438,9 +1502,23 @@ function findBranchForQuery(rawText) {
 
 function findTicketForQuery(rawText) {
   const numberMatch = rawText.toUpperCase().match(/DG-\d+/);
-  if (numberMatch) return (state.securityTickets || []).find((ticket) => ticket.number === numberMatch[0]);
-  const employee = findEmployeeForQuery(rawText);
-  if (employee) return (state.securityTickets || []).find((ticket) => ticket.employeeId === employee.id && ticket.status !== "Cerrado");
+  if (numberMatch) {
+    const ticket = (state.securityTickets || []).find((item) => item.number === numberMatch[0]);
+    if (ticket) jouleLastTicketId = ticket.id;
+    return ticket;
+  }
+  const employee = findEmployeeForQuery(rawText, { useContext: false });
+  if (employee) {
+    const ticket = (state.securityTickets || []).find((item) => item.employeeId === employee.id && item.status !== "Cerrado");
+    if (ticket) {
+      jouleLastTicketId = ticket.id;
+      return ticket;
+    }
+  }
+  if (jouleLastTicketId) {
+    const remembered = (state.securityTickets || []).find((item) => item.id === jouleLastTicketId);
+    if (remembered) return remembered;
+  }
   return null;
 }
 
@@ -1513,14 +1591,26 @@ async function jouleCreateTicketFromText(raw) {
 }
 
 function jouleResolveIssue(raw, status) {
-  const employee = findEmployeeForQuery(raw);
+  // Para esta accion, un empleado explicito en el mensaje manda sobre la memoria de
+  // conversacion: "apruebala"/"aprueba la incidencia" debe resolver a la unica pendiente
+  // en vez de a quien se menciono antes por otro motivo (ej. una consulta de estado).
+  const explicitEmployee = findEmployeeForQuery(raw, { useContext: false });
   const actionWord = status === "Aprobada" ? "aprueba" : "rechaza";
-  if (!employee) return `Dime de quien es la incidencia. Por ejemplo: "${actionWord} las vacaciones de ${activeEmployees()[0]?.name || "Ana Lopez"}".`;
   const typeMatch = ["vacaciones", "permiso", "incapacidad"].find((type) => raw.toLowerCase().includes(type));
-  const issue = findPendingIssueForEmployee(employee, typeMatch);
-  if (!issue) return `${employee.name} no tiene incidencias pendientes${typeMatch ? ` de ${typeMatch}` : ""}.`;
-  updateIssue(issue.id, status);
-  return `Listo. Marque la incidencia de ${issue.type} de ${employee.name} como "${status}".`;
+
+  if (explicitEmployee) {
+    const issue = findPendingIssueForEmployee(explicitEmployee, typeMatch);
+    if (!issue) return `${explicitEmployee.name} no tiene incidencias pendientes${typeMatch ? ` de ${typeMatch}` : ""}.`;
+    updateIssue(issue.id, status);
+    return `Listo. Marque la incidencia de ${issue.type} de ${explicitEmployee.name} como "${status}".`;
+  }
+
+  const pending = state.issues.filter((issue) => issue.status === "Pendiente" && (!typeMatch || issue.type === typeMatch));
+  if (pending.length === 1) {
+    updateIssue(pending[0].id, status);
+    return `Como solo tenias una incidencia pendiente, marque la de ${pending[0].type} de ${pending[0].employeeName} como "${status}".`;
+  }
+  return `Dime de quien es la incidencia. Por ejemplo: "${actionWord} las vacaciones de ${activeEmployees()[0]?.name || "Ana Lopez"}".`;
 }
 
 function jouleListEmployees(raw) {
@@ -1841,7 +1931,7 @@ const JOULE_SKILLS = [
   { id: "rechazar-incidencia", test: (t) => /(rechaza|rechazar|niega|deniega)/.test(t), run: (raw) => jouleResolveIssue(raw, "Rechazada") },
   {
     id: "saldo-vacaciones",
-    test: (t) => /(dias|días).*vacacion|saldo.*vacacion/.test(t),
+    test: (t) => /(dias|días).*vacacion|saldo.*vacacion|(cuantos dias|cuántos días).*(tiene|le quedan)\b/.test(t) && !/ticket|alerta|sucursal/.test(t),
     run: (raw) => {
       const employee = findEmployeeForQuery(raw);
       return employee
@@ -1851,7 +1941,7 @@ const JOULE_SKILLS = [
   },
   {
     id: "estado-empleado",
-    test: (t) => /(estado|informacion|información|horas trabajadas) de\b/.test(t),
+    test: (t) => /(estado|informacion|información|horas trabajadas) de\b|en qu[eé] estado (esta|est[aá]|se encuentra)|c[oó]mo esta\b.*(trabaj|hoy)/.test(t),
     run: (raw) => {
       const employee = findEmployeeForQuery(raw);
       if (!employee) return "No encontre a ese empleado. Verifica el nombre.";
@@ -1978,12 +2068,14 @@ function jouleOpenPanel() {
     jouleSaveHistory();
   }
   jouleRenderMessages();
+  jouleUpdateBadge();
   byId("jouleInput").focus();
 }
 
 function jouleClosePanel() {
   jouleOpen = false;
   byId("joulePanel")?.classList.add("hidden");
+  jouleUpdateBadge();
 }
 
 async function jouleSubmit(rawText) {

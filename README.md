@@ -1,45 +1,46 @@
 # DOGUI WhatsApp
 
-Prototipo avanzado de control de asistencia empresarial por WhatsApp. Funciona como app estatica: abre `index.html` en el navegador y los datos se guardan en `localStorage`.
+Prototipo avanzado de seguridad, phishing awareness y copiloto de IA por WhatsApp. Funciona como app estatica: abre `index.html` en el navegador y los datos se guardan en `localStorage`.
+
+El proyecto nacio como un checador de asistencia; esa parte (simulador de checadas, incidencias de vacaciones/permisos, reportes de asistencia, calendario) sigue completa en el backend y en `app.js` por si se vuelve a usar, pero ya no esta enlazada en la navegacion — el producto ahora se centra en DOGUI WhatsApp Security Assistant, el Phishing Simulator y DOGUI Joule.
 
 Tambien esta listo para GitHub Pages como demo de presentacion. En Pages se muestra un modo demo con datos precargados; el backend real se usa cuando corres `run-server.ps1`.
 
 ## Modulos incluidos
 
-- DOGUI Joule: copiloto de IA inspirado en SAP Joule, con skills de consulta y accion sobre asistencia, seguridad y phishing, mas una capa opcional de lenguaje libre con Claude.
+**Visibles en la navegacion:**
+
+- DOGUI Joule: copiloto de IA inspirado en SAP Joule, con skills de consulta y accion sobre empleados, sucursales, politicas, seguridad y phishing, mas una capa opcional de lenguaje libre con Claude.
 - Vista ejecutiva para presentacion comercial en GitHub Pages.
-- Login visual con resumen de valor y simulacion de conversacion WhatsApp.
-- Panel de salud operativa con barras de cobertura, evidencia y riesgo.
-- Mapa visual de checadas por sucursal y estado.
+- Login visual con resumen de valor.
 - DOGUI WhatsApp Security Assistant para reportar links sospechosos, correos falsos, archivos raros e intentos de fraude.
 - Creacion automatica de tickets, alertas internas y respuestas tipo "No abras el archivo".
 - DOGUI Phishing Simulator con campanas por correo, WhatsApp y SMS.
 - Plantillas de fraude: factura, banco, proveedor, RH, paqueteria y SAT.
 - Metricas de clics, reportes, capacitacion, score por departamento y reporte mensual.
 - Login simulado con roles: Dueno, RRHH, Supervisor y Empleado.
-- Multiempresa preparado y selector de sucursal.
-- Empleados con alta, edicion, baja logica, telefono, area, rol, modalidad, turno y saldo de vacaciones.
-- Simulador de WhatsApp con comandos: `entrar`, `salir`, `descanso`, `regreso`, `permiso`, `vacaciones`, `incapacidad` y `saldo`.
-- Validacion por GPS, geocerca, evidencia/selfie y duplicados.
-- Politicas configurables: tolerancia, radio de geocerca, evidencia obligatoria, GPS obligatorio, horas extra y salida olvidada.
-- Incidencias aprobables/rechazables para permisos, vacaciones e incapacidades.
-- Alertas automaticas: ausencia, salida olvidada, GPS faltante, evidencia faltante, geocerca y duplicados.
-- Vista de quien esta trabajando ahora.
-- Reportes por periodo, area y sucursal.
-- Calendario de asistencia.
-- Exportacion CSV de asistencia para revision interna.
+- Empleados con alta, edicion y baja logica.
 - Auditoria de acciones administrativas.
 - Panel de preparacion para WhatsApp Cloud API y API operativa.
+
+**Con la logica intacta pero sin enlace en la navegacion** (checador de asistencia original — accesible por URL con `#whatsapp`, `#incidencias` o `#reportes` si se necesita, o quitando `hidden` de esas secciones en `index.html`):
+
+- Simulador de WhatsApp con comandos: `entrar`, `salir`, `descanso`, `regreso`, `permiso`, `vacaciones`, `incapacidad` y `saldo`.
+- Validacion por GPS, geocerca, evidencia/selfie y duplicados; politicas de tolerancia/geocerca/GPS/evidencia.
+- Incidencias aprobables/rechazables para permisos, vacaciones e incapacidades; saldo de vacaciones.
+- Alertas automaticas de asistencia (ausencia, salida olvidada, GPS faltante, evidencia faltante, geocerca, duplicados).
+- Vista de quien esta trabajando ahora, reportes por periodo/area/sucursal, calendario y exportacion CSV de asistencia.
+- Multiempresa y selector de sucursal.
+
+DOGUI Joule sigue pudiendo responder sobre asistencia por chat (esa parte es logica, no interfaz) aunque las pantallas correspondientes esten ocultas.
 
 ## Como probar sin backend
 
 1. Abre `index.html`.
 2. Entra con el usuario precargado.
-3. Selecciona un empleado y envia `entrar`.
-4. Prueba con GPS cerca de Sucursal Centro: `19.432608`, `-99.133209`.
-5. Prueba otra entrada sin GPS para ver alertas.
-6. Envia `vacaciones 10/06 al 12/06` y aprueba la incidencia.
-7. Exporta el CSV de asistencia.
+3. En **Security Assistant**, reporta un link sospechoso para un empleado y revisa el ticket y la respuesta automatica.
+4. En **Phishing Simulator**, lanza una campana con una plantilla y revisa las metricas.
+5. Abre **DOGUI Joule** (boton flotante) y prueba "resume el riesgo de hoy", "crea un ticket por correo falso para Carlos Mendez" o "lanza una campana de phishing con la plantilla Aviso SAT".
 
 ## Publicar en GitHub Pages
 
@@ -190,6 +191,9 @@ Inspirado en SAP Joule: un copiloto conversacional embebido, con "skills" que co
   - **Navegacion**: "Llevame a incidencias", "Ve a seguridad", "Abre la seccion de auditoria".
 - Las acciones potencialmente destructivas (dar de baja empleados, lanzar campanas de phishing) piden confirmacion conversacional: Joule pregunta y solo ejecuta si la siguiente respuesta es "si"/"confirmar"/"dale"/"ok"; cualquier otra cosa cancela sin hacer cambios.
 - Todas las acciones usan las mismas funciones que los botones del panel (o sus mismos endpoints dedicados), asi que quedan registradas en auditoria y sincronizadas con el backend igual que cualquier otra accion.
+- **Memoria conversacional corta**: Joule recuerda el ultimo empleado y el ultimo ticket que mencionaste explicitamente, asi que preguntas de seguimiento funcionan sin repetir el nombre — "estado de Carlos Mendez" seguido de "y en que estado esta?" o "cuantos dias tiene?" resuelve solo. Para aprobar/rechazar incidencias, un empleado dicho explicitamente siempre gana sobre la memoria (evita que el contexto de una pregunta anterior no relacionada se cuele); si no dices nombre y solo hay una incidencia pendiente, la resuelve directamente.
+- **Tolerante a errores de escritura**: los nombres de empleados se comparan tambien con distancia de edicion, asi que "Ana Lopz" o "Carlos Méndes" siguen encontrando al empleado correcto.
+- **Presencia proactiva**: el boton flotante muestra un contador (incidencias pendientes + tickets de prioridad alta + alertas abiertas) aunque el panel este cerrado, para que Joule avise sin que tengas que preguntarle.
 - Capa opcional de lenguaje libre: si la skill local no entiende la pregunta y el backend tiene `ANTHROPIC_API_KEY` configurada, la pregunta se manda a `/api/joule/query`, que arma un snapshot de los datos reales (incidencias, tickets, alertas, campanas) y se lo pasa a un modelo de Claude para responder en espanol, con instruccion explicita de no inventar datos fuera del snapshot. Sin la API key configurada, Joule sigue funcionando por completo con las skills deterministas.
 - Variables relevantes en `.env`: `ANTHROPIC_API_KEY` (vacio = capa generativa desactivada) y `JOULE_MODEL` (modelo a usar, por defecto `claude-sonnet-5`).
 

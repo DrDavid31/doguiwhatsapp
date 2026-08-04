@@ -12,22 +12,22 @@
         <div class="login-preview">
           <span class="status">Demo ejecutiva</span>
           <h1>DOGUI WhatsApp</h1>
-          <p>Asistencia, seguridad, phishing awareness, evidencias, tickets e incidencias en un tablero conectado a WhatsApp.</p>
+          <p>Seguridad, phishing awareness, evidencias, tickets y copiloto de IA en un tablero conectado a WhatsApp.</p>
           <div class="preview-grid">
-            <div><strong>98%</strong><span>eventos validados</span></div>
+            <div><strong>98%</strong><span>reportes validados</span></div>
             <div><strong>24/7</strong><span>webhook activo</span></div>
             <div><strong>3 min</strong><span>ticket automatico</span></div>
           </div>
           <div class="phone-demo">
             <div class="phone-head"></div>
-            <div class="phone-bubble">entrar</div>
-            <div class="phone-bubble reply">Entrada registrada. GPS y evidencia correctos.</div>
             <div class="phone-bubble">link sospechoso factura-proveedor.mx</div>
             <div class="phone-bubble reply">No abras el enlace. Ticket creado para revision.</div>
+            <div class="phone-bubble">correo falso del banco</div>
+            <div class="phone-bubble reply">Reportado. Seguridad ya esta revisando el dominio.</div>
           </div>
         </div>
         <form id="loginForm" class="login-box">
-          <span class="brand-mark">W</span>
+          <span class="brand-mark">D</span>
           <h1>Acceso</h1>
           <p>Usa los datos precargados para presentar la demo.</p>
           <label>
@@ -58,17 +58,14 @@
         <span class="brand-mark">D</span>
         <div>
           <strong>DOGUI WhatsApp</strong>
-          <span>Control de asistencia</span>
+          <span>Seguridad y phishing</span>
         </div>
       </div>
       <nav>
         <a href="#tablero" class="active">Tablero</a>
-        <a href="#whatsapp">WhatsApp</a>
         <a href="#empleados">Empleados</a>
         <a href="#seguridad">Security Assistant</a>
         <a href="#phishing">Phishing Simulator</a>
-        <a href="#incidencias">Incidencias</a>
-        <a href="#reportes">Reportes</a>
         <a href="#configuracion">Configuracion</a>
         <a href="#integraciones">Integraciones</a>
         <a href="#auditoria">Auditoria</a>
@@ -98,15 +95,15 @@
       <section class="demo-banner">
         <div>
           <strong>Suite DOGUI lista para GitHub Pages</strong>
-          <span>Modo demo con asistencia, seguridad, phishing y metricas ejecutivas.</span>
+          <span>Modo demo con seguridad, phishing, IA y metricas ejecutivas.</span>
         </div>
         <div>
           <strong>Backend real disponible</strong>
           <span>Al correrlo en local activa SQLite, sesiones, webhook y WhatsApp Cloud API.</span>
         </div>
         <div>
-          <strong>Operacion y ciberseguridad</strong>
-          <span>Geocercas, tickets, alertas internas, simulaciones y reportes operativos.</span>
+          <strong>Ciberseguridad</strong>
+          <span>Tickets, alertas internas, simulaciones de phishing y copiloto DOGUI Joule.</span>
         </div>
       </section>
 
@@ -119,7 +116,7 @@
         <article id="commandKpis" class="command-kpis"></article>
       </section>
 
-      <section id="tablero" class="grid metrics">
+      <section id="tablero" class="grid metrics" hidden>
         <article><span>En turno</span><strong id="metricWorking">0</strong></article>
         <article><span>Retardos hoy</span><strong id="metricLate">0</strong></article>
         <article><span>Horas extra</span><strong id="metricOvertime">0.0</strong></article>
@@ -127,7 +124,7 @@
         <article><span>Alertas activas</span><strong id="metricAlerts">0</strong></article>
       </section>
 
-      <section class="executive-grid">
+      <section class="executive-grid" hidden>
         <article class="panel health-panel">
           <div class="panel-head">
             <div>
@@ -258,7 +255,7 @@
         </div>
       </section>
 
-      <section class="layout">
+      <section class="layout" hidden>
         <article id="whatsapp" class="panel">
           <div class="panel-head">
             <div>
@@ -313,7 +310,7 @@
         </article>
       </section>
 
-      <section class="layout">
+      <section class="layout" hidden>
         <article class="panel">
           <div class="panel-head">
             <div>
@@ -358,7 +355,7 @@
         <div id="employeeList" class="employee-list"></div>
       </section>
 
-      <section id="incidencias" class="layout">
+      <section id="incidencias" class="layout" hidden>
         <article class="panel">
           <h2>Incidencias operativas</h2>
           <div id="issuesList" class="stack"></div>
@@ -369,7 +366,7 @@
         </article>
       </section>
 
-      <section id="reportes" class="layout">
+      <section id="reportes" class="layout" hidden>
         <article class="panel">
           <div class="panel-head">
             <div>
@@ -446,6 +443,7 @@
 
     <button id="jouleLauncher" class="joule-launcher hidden" type="button" aria-label="Abrir DOGUI Joule">
       <span class="joule-spark">&#10024;</span>
+      <span id="jouleBadge" class="joule-badge" hidden>0</span>
     </button>
 
     <aside id="joulePanel" class="joule-panel hidden">

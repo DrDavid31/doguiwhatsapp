@@ -1393,6 +1393,27 @@ body[data-mode="demo"] .status::after {
   filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.7));
 }
 
+.joule-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+.joule-badge[hidden] {
+  display: none;
+}
+
 .joule-panel {
   position: fixed;
   right: 28px;
