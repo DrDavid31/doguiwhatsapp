@@ -16,6 +16,7 @@ from http import cookies
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import rag
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "checador.db"
@@ -36,6 +37,10 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_FROM = os.getenv("TWILIO_FROM", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 JOULE_MODEL = os.getenv("JOULE_MODEL", "claude-sonnet-5")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "llama3.1")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+RAG_SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 
 
 ADMIN_ROLES = {"Dueno", "RRHH", "Supervisor"}
@@ -183,6 +188,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
               id TEXT PRIMARY KEY,
               company_id TEXT NOT NULL REFERENCES companies(id),
+              employee_id TEXT REFERENCES employees(id),
               email TEXT NOT NULL UNIQUE,
               name TEXT NOT NULL,
               role TEXT NOT NULL,
@@ -196,6 +202,26 @@ def init_db():
               user_id TEXT NOT NULL REFERENCES users(id),
               expires_at TEXT NOT NULL,
               created_at TEXT NOT NULL
+            );
+            -- Bitacora de accesos: append-only. No hay endpoint de UPDATE/DELETE
+            -- expuesto para esta tabla, ni siquiera para admin. user_id es NULL
+            -- cuando el intento fue contra un email que no existe. role_at_login
+            -- es una foto del rol al momento del intento para que el reporte no
+            -- dependa de un JOIN a users si el rol cambia despues.
+            -- Nota de cumplimiento (LFPDPPP): ip_address es dato personal. Se
+            -- guarda para deteccion de abuso/soporte a incidentes; aplica
+            -- retencion y acceso restringido a admins igual que el resto de la
+            -- bitacora.
+            CREATE TABLE IF NOT EXISTS login_logs (
+              id TEXT PRIMARY KEY,
+              user_id TEXT REFERENCES users(id),
+              email_attempted TEXT NOT NULL,
+              timestamp TEXT NOT NULL,
+              success INTEGER NOT NULL,
+              failure_reason TEXT,
+              ip_address TEXT,
+              user_agent TEXT,
+              role_at_login TEXT
             );
             CREATE TABLE IF NOT EXISTS employees (
               id TEXT PRIMARY KEY,
@@ -285,6 +311,25 @@ def init_db():
               filename TEXT,
               caption TEXT,
               local_path TEXT,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS documents (
+              id TEXT PRIMARY KEY,
+              employee_id TEXT NOT NULL REFERENCES employees(id),
+              filename TEXT NOT NULL,
+              local_path TEXT,
+              chunk_count INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_chunks (
+              id TEXT PRIMARY KEY,
+              employee_id TEXT NOT NULL REFERENCES employees(id),
+              document_id TEXT REFERENCES documents(id),
+              source_type TEXT NOT NULL,
+              source_label TEXT NOT NULL,
+              page_number INTEGER,
+              content TEXT NOT NULL,
+              embedding TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS security_tickets (
@@ -396,6 +441,7 @@ def init_db():
             """
         )
         ensure_webhook_event_columns(con)
+        ensure_users_columns(con)
         ensure_indexes(con)
         migrate_legacy_state(con)
         seed_phishing_templates(con)
@@ -421,6 +467,12 @@ def ensure_webhook_event_columns(con):
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_events_wa_message_id ON whatsapp_events(wa_message_id)")
 
 
+def ensure_users_columns(con):
+    columns = {row["name"] for row in con.execute("PRAGMA table_info(users)")}
+    if "employee_id" not in columns:
+        con.execute("ALTER TABLE users ADD COLUMN employee_id TEXT REFERENCES employees(id)")
+
+
 def ensure_indexes(con):
     con.executescript(
         """
@@ -439,6 +491,10 @@ def ensure_indexes(con):
         CREATE INDEX IF NOT EXISTS idx_phishing_targets_tokens ON phishing_targets(campaign_id, click_token, report_token, training_token);
         CREATE INDEX IF NOT EXISTS idx_phishing_events_campaign_created ON phishing_events(campaign_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_training_assignments_campaign_employee ON training_assignments(campaign_id, employee_id);
+        CREATE INDEX IF NOT EXISTS idx_login_logs_user_timestamp ON login_logs(user_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_login_logs_timestamp ON login_logs(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_documents_employee_created ON documents(employee_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_employee ON knowledge_chunks(employee_id);
         """
     )
 
@@ -1221,6 +1277,82 @@ def add_audit(con, action, detail, user_name="Sistema", role="Sistema"):
     )
 
 
+# Precomputado una sola vez al importar el modulo: se usa para que un intento de
+# login contra un email inexistente siga corriendo un PBKDF2 completo (mismo
+# costo que una verificacion real), en vez de responder de inmediato. Sin esto,
+# "usuario no existe" es medible por tiempo de respuesta aunque el mensaje de
+# error sea identico a "contrasena incorrecta".
+_DUMMY_PASSWORD_SALT, _DUMMY_PASSWORD_HASH = hash_password("dummy-password-para-tiempo-constante")
+
+
+def add_login_log(con, user, email_attempted, success, failure_reason, ip_address, user_agent):
+    con.execute(
+        """
+        INSERT INTO login_logs (id, user_id, email_attempted, timestamp, success, failure_reason, ip_address, user_agent, role_at_login)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            make_id("login"),
+            user["id"] if user else None,
+            email_attempted,
+            utc_now(),
+            bool_int(success),
+            failure_reason,
+            ip_address,
+            (user_agent or "")[:500],
+            user["role"] if user else None,
+        ),
+    )
+
+
+def list_login_logs(con, company_id, limit, offset, filter_user_id=None, date_from=None, date_to=None):
+    # Intentos contra un email que no existe (user_id NULL) no tienen empresa a la
+    # que atarse -- son ruido/ataques genericos contra el login compartido, asi
+    # que se muestran a cualquier admin junto con los de su propia empresa.
+    conditions = ["(u.company_id = ? OR ll.user_id IS NULL)"]
+    params = [company_id]
+    if filter_user_id:
+        conditions.append("ll.user_id = ?")
+        params.append(filter_user_id)
+    if date_from:
+        conditions.append("ll.timestamp >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("ll.timestamp <= ?")
+        params.append(date_to)
+    where_clause = " AND ".join(conditions)
+    total = con.execute(
+        f"SELECT COUNT(*) FROM login_logs ll LEFT JOIN users u ON u.id = ll.user_id WHERE {where_clause}",
+        params,
+    ).fetchone()[0]
+    rows = con.execute(
+        f"""
+        SELECT ll.*, u.name AS user_name
+        FROM login_logs ll LEFT JOIN users u ON u.id = ll.user_id
+        WHERE {where_clause}
+        ORDER BY ll.timestamp DESC
+        LIMIT ? OFFSET ?
+        """,
+        (*params, limit, offset),
+    ).fetchall()
+    items = [
+        {
+            "id": row["id"],
+            "userId": row["user_id"],
+            "userName": row["user_name"],
+            "emailAttempted": row["email_attempted"],
+            "timestamp": row["timestamp"],
+            "success": bool(row["success"]),
+            "failureReason": row["failure_reason"],
+            "ipAddress": row["ip_address"],
+            "userAgent": row["user_agent"],
+            "roleAtLogin": row["role_at_login"],
+        }
+        for row in rows
+    ]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
 def create_session(con, user):
     token = secrets.token_urlsafe(32)
     expires_at = (datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)).isoformat()
@@ -1310,7 +1442,20 @@ def process_business_message(sender_phone, message_text, raw_message, message_ty
         event = classify_event(message_text)
         evidence = bool(media)
         if media:
-            store_media_attachment(con, wa_id, employee["id"], media)
+            local_path = store_media_attachment(con, wa_id, employee["id"], media)
+            if media.get("type") == "document" and local_path:
+                ext = os.path.splitext((media.get("filename") or "").lower())[1]
+                if ext in RAG_SUPPORTED_EXTENSIONS:
+                    filename = media.get("filename") or f"documento{ext}"
+                    try:
+                        chunk_count = rag.ingest_document(con, employee["id"], filename, local_path)
+                        response = f"Agregue \"{filename}\" a tu base de conocimiento ({chunk_count} fragmentos indexados). Ya puedes preguntarme sobre su contenido."
+                    except rag.RagUnavailableError:
+                        response = f"Recibi \"{filename}\" pero no pude indexarlo: el servicio de IA local (Ollama) no esta disponible ahora mismo."
+                    add_audit(con, "RAG ingesta", f"{employee['name']}: {filename}", "Meta", "Sistema")
+                    con.execute("UPDATE whatsapp_events SET status = 'rag_ingested' WHERE wa_message_id = ?", (wa_id,))
+                    send_whatsapp_text(sender_phone, response)
+                    return {"status": "rag_ingested", "response": response, "waMessageId": wa_id}
 
         security_type, security_severity = classify_security_report(message_text, message_type, media)
         if event == "mensaje" and security_type:
@@ -1330,6 +1475,21 @@ def process_business_message(sender_phone, message_text, raw_message, message_ty
             con.execute("UPDATE whatsapp_events SET status = 'security_ticket' WHERE wa_message_id = ?", (wa_id,))
             send_whatsapp_text(sender_phone, response)
             return {"status": "security_ticket", "ticket": ticket, "response": response, "waMessageId": wa_id}
+
+        if event == "mensaje" and not media:
+            try:
+                answer, sources = rag.answer_question(con, employee, message_text)
+                response = answer
+                if sources:
+                    response += "\n\nFuentes: " + ", ".join(sources)
+                rag.store_memory(con, employee["id"], message_text, answer)
+            except rag.RagUnavailableError:
+                response = "El servicio de IA local (Ollama) no esta disponible ahora mismo. Intenta de nuevo en un momento."
+            create_chat(con, employee, message_text, response)
+            add_audit(con, "RAG respuesta", f"{employee['name']}: {message_text}", "Meta", "Sistema")
+            con.execute("UPDATE whatsapp_events SET status = 'rag_answered' WHERE wa_message_id = ?", (wa_id,))
+            send_whatsapp_text(sender_phone, response)
+            return {"status": "rag_answered", "response": response, "waMessageId": wa_id}
 
         status = "Registrado"
         flags = []
@@ -2024,6 +2184,24 @@ class Handler(SimpleHTTPRequestHandler):
                     )
                 ]
             return self.send_json(rows)
+        if parsed.path == "/api/rag/documents":
+            user = self.require_user()
+            if not user:
+                return
+            with connect() as con:
+                rows = [
+                    dict(row)
+                    for row in con.execute(
+                        """
+                        SELECT d.*
+                        FROM documents d JOIN employees e ON e.id = d.employee_id
+                        WHERE e.company_id = ?
+                        ORDER BY d.created_at DESC LIMIT 200
+                        """,
+                        (user["company_id"],),
+                    )
+                ]
+            return self.send_json(rows)
         if parsed.path == "/api/security/tickets":
             user = self.require_user()
             if not user:
@@ -2052,6 +2230,29 @@ class Handler(SimpleHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
             with connect() as con:
                 return self.send_json(build_monthly_phishing_report(con, user["company_id"], query.get("month", [None])[0]))
+        if parsed.path == "/api/access/login-logs":
+            user = self.require_user()
+            if not user:
+                return
+            if not self.require_role(user, ADMIN_ROLES):
+                return
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = min(max(int(query.get("limit", ["50"])[0]), 1), 200)
+                offset = max(int(query.get("offset", ["0"])[0]), 0)
+            except ValueError:
+                return self.send_json({"error": "invalid_pagination"}, 400)
+            with connect() as con:
+                result = list_login_logs(
+                    con,
+                    user["company_id"],
+                    limit,
+                    offset,
+                    filter_user_id=query.get("userId", [None])[0],
+                    date_from=query.get("from", [None])[0],
+                    date_to=query.get("to", [None])[0],
+                )
+            return self.send_json(result)
         tracking_parts = [urllib.parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
         if len(tracking_parts) == 3 and tracking_parts[0] in {"t", "r", "training"}:
             action, campaign_id, target_value = tracking_parts
@@ -2104,12 +2305,27 @@ class Handler(SimpleHTTPRequestHandler):
             _, payload = self.read_json()
             if self.reject_invalid_json():
                 return
+            email = payload.get("email", "")
+            password = payload.get("password", "")
+            client_ip = self.client_address[0]
+            user_agent = self.headers.get("User-Agent", "")
             with connect() as con:
-                user = con.execute("SELECT * FROM users WHERE email = ? AND active = 1", (payload.get("email", ""),)).fetchone()
-                if not user or not verify_password(payload.get("password", ""), user["password_salt"], user["password_hash"]):
+                user = con.execute("SELECT * FROM users WHERE email = ? AND active = 1", (email,)).fetchone()
+                if user:
+                    password_ok = verify_password(password, user["password_salt"], user["password_hash"])
+                else:
+                    # Corre el mismo costo de PBKDF2 aunque el email no exista, para que
+                    # "usuario no existe" no sea distinguible de "contrasena incorrecta"
+                    # por el tiempo de respuesta (el mensaje de error ya era identico).
+                    verify_password(password, _DUMMY_PASSWORD_SALT, _DUMMY_PASSWORD_HASH)
+                    password_ok = False
+                if not user or not password_ok:
+                    failure_reason = "bad_password" if user else "user_not_found"
+                    add_login_log(con, user, email, False, failure_reason, client_ip, user_agent)
                     return self.send_json({"error": "credenciales_invalidas"}, 401)
                 token, expires_at = create_session(con, user)
                 add_audit(con, "Inicio de sesion", user["email"], user["name"], user["role"])
+                add_login_log(con, user, email, True, None, client_ip, user_agent)
             secure_flag = " Secure;" if PUBLIC_BASE_URL.startswith("https://") else ""
             cookie = f"checador_session={token}; HttpOnly;{secure_flag} SameSite=Lax; Path=/; Max-Age={SESSION_DAYS * 86400}"
             return self.send_json({"ok": True, "user": public_user(dict(user)), "expiresAt": expires_at}, extra_headers={"Set-Cookie": cookie})
@@ -2409,6 +2625,64 @@ class Handler(SimpleHTTPRequestHandler):
             parsed_msg = parse_whatsapp_message(raw)
             result = process_business_message(parsed_msg["from"], parsed_msg["text"], raw, parsed_msg["type"], parsed_msg["location"], parsed_msg["media"])
             return self.send_json(result)
+
+        if parsed.path == "/api/rag/ingest":
+            user = self.require_user()
+            if not user:
+                return
+            _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
+            employee_id = payload.get("employeeId", "")
+            filename = payload.get("filename", "")
+            content_b64 = payload.get("contentBase64", "")
+            ext = os.path.splitext(filename.lower())[1]
+            if ext not in RAG_SUPPORTED_EXTENSIONS:
+                return self.send_json({"error": "unsupported_extension"}, 400)
+            try:
+                raw_bytes = base64.b64decode(content_b64, validate=True)
+            except (ValueError, base64.binascii.Error):
+                return self.send_json({"error": "invalid_base64"}, 400)
+            with connect() as con:
+                employee = con.execute(
+                    "SELECT * FROM employees WHERE id = ? AND company_id = ?",
+                    (employee_id, user["company_id"]),
+                ).fetchone()
+                if not employee:
+                    return self.send_json({"error": "employee_not_found"}, 404)
+                local_path = MEDIA_DIR / f"{make_id('doc')}{ext}"
+                local_path.write_bytes(raw_bytes)
+                try:
+                    chunk_count = rag.ingest_document(con, employee_id, filename, str(local_path))
+                except rag.RagUnavailableError as exc:
+                    return self.send_json({"error": "rag_unavailable", "detail": str(exc)}, 502)
+                add_audit(con, "RAG ingesta", f"{employee['name']}: {filename}", user["name"], user["role"])
+            return self.send_json({"ok": True, "chunks": chunk_count})
+
+        if parsed.path == "/api/rag/ask":
+            user = self.require_user()
+            if not user:
+                return
+            _, payload = self.read_json()
+            if self.reject_invalid_json():
+                return
+            employee_id = payload.get("employeeId", "")
+            question = (payload.get("question") or "").strip()
+            if not question:
+                return self.send_json({"error": "empty_question"}, 400)
+            with connect() as con:
+                employee = con.execute(
+                    "SELECT * FROM employees WHERE id = ? AND company_id = ?",
+                    (employee_id, user["company_id"]),
+                ).fetchone()
+                if not employee:
+                    return self.send_json({"error": "employee_not_found"}, 404)
+                try:
+                    answer, sources = rag.answer_question(con, employee, question)
+                    rag.store_memory(con, employee_id, question, answer)
+                except rag.RagUnavailableError as exc:
+                    return self.send_json({"error": "rag_unavailable", "detail": str(exc)}, 502)
+            return self.send_json({"answer": answer, "sources": sources})
 
         return self.send_json({"error": "not found"}, 404)
 

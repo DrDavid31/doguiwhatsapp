@@ -104,6 +104,7 @@ admin123
 - `POST /api/policy`: actualizar politicas de asistencia.
 - `POST /api/branches`: alta/edicion de sucursales.
 - `GET /api/state`, `PUT /api/state` y `POST /api/state`: estado consolidado para el panel, con concurrencia optimista por `version` (ver seccion Seguridad).
+- `GET /api/access/login-logs`: bitacora de accesos (ver seccion "Roles y bitacora de accesos" mas abajo). Solo admin.
 
 La base ya no depende de un solo JSON: `server.py` crea tablas normalizadas para empresas, sucursales, politicas, usuarios, sesiones, empleados, registros, incidencias, alertas, auditoria, chat, webhooks, media, tickets de seguridad, evidencia, plantillas, campanas, targets, eventos de phishing y capacitaciones.
 
@@ -203,7 +204,7 @@ Inspirado en SAP Joule: un copiloto conversacional embebido, con "skills" que co
 python -m unittest discover -s tests -v
 ```
 
-Sin dependencias externas (solo `unittest` de la libreria estandar, igual que el resto del proyecto). Levanta el servidor real sobre un puerto y una base de datos temporales, e incluye la lista blanca de estaticos, autenticacion (incluyendo los endpoints de lectura), verificacion de firma del webhook, permisos por rol y un flujo completo de login -> incidencia -> aprobacion. Corre en cada push/PR via GitHub Actions (`.github/workflows/tests.yml`).
+Sin dependencias externas (solo `unittest` de la libreria estandar, igual que el resto del proyecto). Levanta el servidor real sobre un puerto y una base de datos temporales, e incluye la lista blanca de estaticos, autenticacion (incluyendo los endpoints de lectura), verificacion de firma del webhook, permisos por rol (incluyendo un barrido de `Basico` contra *todos* los endpoints admin, no solo los nuevos), la bitacora de accesos (login exitoso/fallido por password/fallido por usuario inexistente, paginacion, filtros, y que sobreviva a la baja logica de un empleado ligado) y un flujo completo de login -> incidencia -> aprobacion. Corre en cada push/PR via GitHub Actions (`.github/workflows/tests.yml`).
 
 ## Seguridad
 
@@ -211,7 +212,7 @@ Sin dependencias externas (solo `unittest` de la libreria estandar, igual que el
 - Todos los endpoints `GET` que devuelven datos de la empresa (`/api/state`, `/api/employees`, `/api/records`, `/api/issues`, `/api/media`, tickets, alertas, campanas de phishing) requieren sesion iniciada. Solo quedan publicos `/api/health`, `/api/me` y el catalogo generico `/api/phishing/templates`.
 - `/api/simulate-whatsapp` requiere sesion iniciada; ya no acepta eventos anonimos.
 - `/webhooks/whatsapp` rechaza (fail-closed) cualquier mensaje si `META_APP_SECRET` no esta configurado o la firma no coincide, en vez de aceptarlo sin verificar.
-- Acciones administrativas (dar de baja empleados, alta/edicion de empleados, aprobar/rechazar incidencias, cerrar tickets, lanzar campanas de phishing, `PUT/POST /api/state`) requieren un rol distinto de `Empleado` (`require_role`). Hoy solo existe la cuenta admin sembrada (`Dueno`), asi que gran parte de esto es proteccion a futuro para cuando se creen mas cuentas.
+- Acciones administrativas (dar de baja empleados, alta/edicion de empleados, aprobar/rechazar incidencias, cerrar tickets, lanzar campanas de phishing, `PUT/POST /api/state`, y la bitacora de accesos) requieren uno de los roles admin (`require_role(user, ADMIN_ROLES)`, ver seccion "Roles y bitacora de accesos"). Hoy solo existe la cuenta admin sembrada (`Dueno`); no hay todavia un endpoint/UI para crear cuentas nuevas (`Basico` o admin adicionales) desde la app — se insertan directo en `users` mientras eso no exista.
 - La cookie de sesion se marca `Secure` automaticamente cuando `PUBLIC_BASE_URL` apunta a `https://`.
 - El servidor imprime avisos al arrancar si `META_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `PUBLIC_BASE_URL` o la contrasena del admin sembrado siguen en valores inseguros/por defecto.
 - El panel ya usa endpoints por recurso para sus acciones administrativas en vez de depender solo del guardado de estado completo: alta/edicion/baja de empleados (`POST`/`DELETE /api/employees`), aprobar/rechazar incidencias (`POST /api/issues/:id/status`), cerrar alertas (`POST /api/alerts/:id/status`), politicas (`POST /api/policy`) y sucursales (`POST /api/branches`). Esto hace que los permisos por rol arriba mencionados realmente se apliquen desde la interfaz, no solo si alguien llama a la API directamente.
@@ -220,6 +221,41 @@ Sin dependencias externas (solo `unittest` de la libreria estandar, igual que el
 - Los links de tracking del Phishing Simulator (`/t/`, `/r/`, `/training/`) ya no aceptan `employee_id` como identificador valido — solo el `id` propio del target (el que de verdad usan los links reales enviados) o su token secreto. `employee_id` se descartó porque se filtra sin querer via `GET /api/employees` a cualquier usuario autenticado, lo que permitia falsificar clics/reportes/capacitaciones de otros empleados.
 - La cuenta admin sembrada (`admin@empresa.mx` / `admin123`) ahora se puede rotar desde la app: `POST /api/change-password` (autenticado, pide la contrasena actual, minimo 8 caracteres, cierra todas las sesiones activas al terminar) y un formulario en Configuracion > "Seguridad de la cuenta". Antes la unica forma de cambiarla era editando la base de datos directamente.
 
+## Roles y bitacora de accesos
+
+Dos niveles de acceso sobre `users.role`:
+
+- **Admin** (`Dueno`, `RRHH`, `Supervisor`, agrupados en `ADMIN_ROLES`): control total. Pasa `require_role(user, ADMIN_ROLES)` en todas las rutas de escritura administrativa y en `GET /api/access/login-logs`.
+- **`Basico`**: acceso minimo. Puede iniciar sesion y leer los endpoints generales autenticados (`/api/state`, `/api/employees`, `/api/records`, tickets/alertas de seguridad, campanas de phishing), pero cualquier endpoint marcado arriba como administrativo le responde `403` — nunca `404`/`500`, para no distinguir "no autorizado" de "no existe". Cualquier valor de `users.role` que no este en `ADMIN_ROLES` cae automaticamente en este nivel (no es necesario declarar `Basico` en una lista aparte).
+
+El servidor es la unica fuente de verdad: la navegacion del panel (`app.js`, `applyRoleVisibility()`) solo oculta los enlaces/secciones que la sesion activa no puede usar, como ayuda visual — no es una barrera de seguridad. Un `Basico` que llame los endpoints admin directamente (curl, devtools) sigue recibiendo `403` del servidor.
+
+`users.employee_id` (nullable, `REFERENCES employees(id)`) liga opcionalmente una cuenta de acceso con su ficha de empleado cuando coinciden; no se usa para autorizacion (eso sigue siendo solo `users.role`), es para poder correlacionar "quien entro al panel" con "que empleado es" cuando aplica.
+
+**Bitacora de accesos (`login_logs`)**: tabla de solo insercion (append-only, sin endpoint `UPDATE`/`DELETE`, ni para admin) que registra *todo* intento de login, exitoso o no, antes de responder al cliente:
+
+| Columna | Notas |
+|---|---|
+| `id` | |
+| `user_id` | Nullable. `NULL` cuando el email no corresponde a ninguna cuenta (no se revela si el usuario existe). No tiene `ON DELETE CASCADE` ni depende de un `JOIN` con `employees`: una baja logica de empleado (`DELETE /api/employees/:id`, que solo pone `employees.active = 0`) nunca borra ni corrompe estas filas. |
+| `email_attempted` | El correo tal cual se intento, exista o no la cuenta. |
+| `timestamp` | UTC, indexado (solo y en compuesto con `user_id`). El panel lo convierte a hora local al mostrarlo. |
+| `success` | |
+| `failure_reason` | `bad_password` \| `user_not_found` \| `NULL` cuando `success = 1`. (`account_locked` esta reservado en el enum para cuando exista bloqueo de cuenta por intentos fallidos; no se genera todavia — ver limitaciones abajo.) |
+| `ip_address` | De `self.client_address` (no se confia en `X-Forwarded-For` sin un proxy conocido delante). |
+| `user_agent` | Header `User-Agent`, recortado a 500 caracteres. |
+| `role_at_login` | Snapshot de `users.role` en el momento del login (exitoso), para que un cambio de rol posterior no reescriba el historial. |
+
+`GET /api/access/login-logs` (solo admin): paginado con `limit`/`offset` (`limit` 1-200, default 50; `offset` >= 0), filtros opcionales `userId`, `from` y `to` (timestamps UTC ISO 8601, comparados como texto contra la columna indexada). Devuelve `{ items, total, limit, offset }`. Los intentos contra un email inexistente (`user_id NULL`) se muestran a cualquier admin junto con los de su propia empresa, porque no tienen `company_id` al que amarrarse.
+
+El login usa costo constante para no filtrar por tiempo de respuesta si el email existe: cuando el usuario no se encuentra, igual se corre un PBKDF2 completo contra un hash de relleno antes de responder, así "contraseña incorrecta" y "usuario no existe" tardan lo mismo (ambos ya devolvían el mismo mensaje de error).
+
+Limitaciones conocidas (documentadas, no implementadas en este cambio):
+
+- No hay rate limiting en `/api/login`. Alguien puede intentar contraseñas sin límite; solo queda registrado en `login_logs`. Deberia agregarse antes de exponer el login a internet sin otra proteccion (ej. Cloudflare/WAF) delante.
+- No hay endpoint ni UI para crear cuentas (`Basico` o admin) desde el panel — se insertan directo en `users` via SQL, igual que la cuenta admin sembrada.
+- **Nota de cumplimiento (LFPDPPP)**: `login_logs.ip_address` es un dato personal bajo la Ley Federal de Proteccion de Datos Personales en Posesion de los Particulares. Antes de operar con datos de gobierno/clientes reales en Mexico, agregar politica de retencion/purga de esta tabla y mencionarla en el aviso de privacidad.
+
 ## Que faltaria para produccion completa
 
 - Hospedar `server.py` detras de HTTPS con dominio propio.
@@ -227,6 +263,8 @@ Sin dependencias externas (solo `unittest` de la libreria estandar, igual que el
 - Agregar email real al catalogo de empleados para campanas por correo.
 - Agregar aviso de privacidad, consentimiento y politicas internas.
 - Integracion directa con SIEM/ticketing externo.
+- Rate limiting en `/api/login` (ver "Roles y bitacora de accesos").
+- Endpoint/UI para crear y administrar cuentas (`Basico` y admin) sin tocar la base de datos directamente.
 
 ## Modelo de backend recomendado
 

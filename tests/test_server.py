@@ -588,5 +588,193 @@ class TrainingPageEscapingTests(unittest.TestCase):
         self.assertNotIn('"><script>alert(1)</script>', html)
 
 
+class LoginAuditLogTests(DoguiTestCase):
+    def test_successful_login_is_logged(self):
+        self.login()
+        with srv.connect() as con:
+            rows = con.execute(
+                "SELECT * FROM login_logs WHERE email_attempted = ?", ("admin@empresa.mx",)
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["success"], 1)
+        self.assertIsNone(rows[0]["failure_reason"])
+        self.assertIsNotNone(rows[0]["user_id"])
+        self.assertEqual(rows[0]["role_at_login"], "Dueno")
+        self.assertIsNotNone(rows[0]["timestamp"])
+
+    def test_failed_login_with_wrong_password_is_logged(self):
+        status, payload, _ = self.request(
+            "POST", "/api/login", {"email": "admin@empresa.mx", "password": "wrong"}
+        )
+        self.assertEqual(status, 401)
+        with srv.connect() as con:
+            rows = con.execute(
+                "SELECT * FROM login_logs WHERE email_attempted = ?", ("admin@empresa.mx",)
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["success"], 0)
+        self.assertEqual(rows[0]["failure_reason"], "bad_password")
+        self.assertIsNotNone(rows[0]["user_id"])
+
+    def test_failed_login_with_nonexistent_user_is_logged(self):
+        status, payload, _ = self.request(
+            "POST", "/api/login", {"email": "nadie@test.mx", "password": "loquesea"}
+        )
+        self.assertEqual(status, 401)
+        with srv.connect() as con:
+            rows = con.execute(
+                "SELECT * FROM login_logs WHERE email_attempted = ?", ("nadie@test.mx",)
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["success"], 0)
+        self.assertEqual(rows[0]["failure_reason"], "user_not_found")
+        self.assertIsNone(rows[0]["user_id"])
+
+    def test_login_error_response_does_not_reveal_which_reason_failed(self):
+        _, wrong_password_payload, _ = self.request(
+            "POST", "/api/login", {"email": "admin@empresa.mx", "password": "wrong"}
+        )
+        _, unknown_user_payload, _ = self.request(
+            "POST", "/api/login", {"email": "nadie@test.mx", "password": "wrong"}
+        )
+        self.assertEqual(wrong_password_payload, unknown_user_payload)
+
+
+class BasicoRoleGatingTests(DoguiTestCase):
+    def test_basico_role_is_blocked_from_login_logs_endpoint(self):
+        self.create_user("basico@test.mx", "Basico")
+        token, _ = self.login("basico@test.mx", "test1234")
+        status, _, _ = self.request("GET", "/api/access/login-logs", cookie=token)
+        self.assertEqual(status, 403)
+
+    def test_basico_role_is_blocked_from_existing_admin_endpoints(self):
+        self.create_user("basico2@test.mx", "Basico")
+        token, _ = self.login("basico2@test.mx", "test1234")
+
+        status, _, _ = self.request("DELETE", "/api/employees/emp-carlos", cookie=token)
+        self.assertEqual(status, 403)
+
+        status, _, _ = self.request("POST", "/api/policy", {"tolerance": 5}, cookie=token)
+        self.assertEqual(status, 403)
+
+        status, _, _ = self.request("PUT", "/api/state", {"employees": []}, cookie=token)
+        self.assertEqual(status, 403)
+
+        status, _, _ = self.request("POST", "/api/employees", {"name": "X", "phone": "+521"}, cookie=token)
+        self.assertEqual(status, 403)
+
+    def test_basico_role_can_still_read_general_data_endpoints(self):
+        self.create_user("basico3@test.mx", "Basico")
+        token, _ = self.login("basico3@test.mx", "test1234")
+        status, _, _ = self.request("GET", "/api/state", cookie=token)
+        self.assertEqual(status, 200)
+
+    # Barre TODOS los endpoints protegidos con require_role(ADMIN_ROLES) en server.py
+    # (no solo los nuevos de esta funcionalidad), para que "Basico" nunca quede
+    # expuesto por un endpoint que se agregue despues y se nos olvide auditar aqui.
+    ADMIN_ONLY_ENDPOINTS = [
+        ("PUT", "/api/state", {"employees": []}),
+        ("POST", "/api/state", {"employees": []}),
+        ("POST", "/api/employees", {"name": "X", "phone": "+521"}),
+        ("POST", "/api/security/tickets/tk-fake/status", {"status": "Cerrado"}),
+        ("POST", "/api/phishing/campaigns", {"name": "X"}),
+        ("POST", "/api/phishing/campaigns/camp-fake/launch", None),
+        ("POST", "/api/issues/issue-fake/status", {"status": "Aprobada"}),
+        ("POST", "/api/alerts/alert-fake/status", {"status": "Cerrada"}),
+        ("POST", "/api/policy", {"tolerance": 5}),
+        ("POST", "/api/branches", {"name": "X", "lat": 1, "lng": 1}),
+        ("DELETE", "/api/employees/emp-fake", None),
+        ("GET", "/api/access/login-logs", None),
+    ]
+
+    def test_basico_role_gets_403_on_every_admin_only_endpoint(self):
+        self.create_user("basico-sweep@test.mx", "Basico")
+        token, _ = self.login("basico-sweep@test.mx", "test1234")
+        for method, path, body in self.ADMIN_ONLY_ENDPOINTS:
+            with self.subTest(method=method, path=path):
+                status, payload, _ = self.request(method, path, body, cookie=token)
+                self.assertEqual(status, 403, f"{method} {path} deberia devolver 403 para Basico, devolvio {status}: {payload}")
+
+
+class LoginLogsAccessEndpointTests(DoguiTestCase):
+    def test_admin_can_read_paginated_login_logs(self):
+        token, _ = self.login()
+        for _ in range(3):
+            self.request("POST", "/api/login", {"email": "admin@empresa.mx", "password": "wrong"})
+
+        status, payload, _ = self.request("GET", "/api/access/login-logs?limit=2&offset=0", cookie=token)
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(len(payload["items"]), 2)
+        self.assertEqual(payload["limit"], 2)
+        self.assertEqual(payload["offset"], 0)
+        self.assertGreaterEqual(payload["total"], 4)
+
+    def test_admin_can_filter_login_logs_by_user_id(self):
+        token, admin_user = self.login()
+        self.create_user("otro@test.mx", "RRHH")
+        self.login("otro@test.mx", "test1234")
+
+        status, payload, _ = self.request(
+            "GET", f"/api/access/login-logs?userId={admin_user['id']}", cookie=token
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["items"])
+        self.assertTrue(all(item["userId"] == admin_user["id"] for item in payload["items"]))
+
+    def test_admin_can_filter_login_logs_by_date_range(self):
+        token, _ = self.login()
+        status, payload, _ = self.request(
+            "GET", "/api/access/login-logs?from=2999-01-01T00:00:00", cookie=token
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["items"], [])
+
+    def test_invalid_pagination_params_are_rejected(self):
+        token, _ = self.login()
+        status, payload, _ = self.request("GET", "/api/access/login-logs?limit=abc", cookie=token)
+        self.assertEqual(status, 400, payload)
+
+
+class LoginLogsSurviveEmployeeDeactivationTests(DoguiTestCase):
+    def test_login_logs_survive_linked_employee_deactivation(self):
+        token, _ = self.login()
+        status, employee_payload, _ = self.request(
+            "POST", "/api/employees", {"name": "Empleado Vinculado", "phone": "+52 55 9999 0001"}, cookie=token
+        )
+        self.assertEqual(status, 200, employee_payload)
+        employee_id = employee_payload["id"]
+
+        salt, digest = srv.hash_password("test1234")
+        with srv.connect() as con:
+            con.execute(
+                """
+                INSERT INTO users (id, company_id, email, name, role, password_salt, password_hash, active, created_at, employee_id)
+                VALUES ('usr-vinculado', 'co-demo', 'vinculado@test.mx', 'Usuario Vinculado', 'Basico', ?, ?, 1, ?, ?)
+                """,
+                (salt, digest, srv.utc_now(), employee_id),
+            )
+
+        self.login("vinculado@test.mx", "test1234")
+        self.request("POST", "/api/login", {"email": "vinculado@test.mx", "password": "wrong"})
+
+        with srv.connect() as con:
+            before = con.execute(
+                "SELECT COUNT(*) FROM login_logs WHERE user_id = 'usr-vinculado'"
+            ).fetchone()[0]
+        self.assertEqual(before, 2)
+
+        status, _, _ = self.request("DELETE", f"/api/employees/{employee_id}", cookie=token)
+        self.assertEqual(status, 200)
+
+        with srv.connect() as con:
+            after_rows = con.execute(
+                "SELECT * FROM login_logs WHERE user_id = 'usr-vinculado' ORDER BY timestamp"
+            ).fetchall()
+            employee_row = con.execute("SELECT active FROM employees WHERE id = ?", (employee_id,)).fetchone()
+        self.assertEqual(employee_row["active"], 0)
+        self.assertEqual(len(after_rows), before)
+        self.assertEqual(after_rows[0]["email_attempted"], "vinculado@test.mx")
+
+
 if __name__ == "__main__":
     unittest.main()

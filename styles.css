@@ -640,6 +640,26 @@ button:active {
   overflow: auto;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.pagination button {
+  min-height: 34px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.pagination button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 table {
   width: 100%;
   min-width: 920px;
@@ -999,6 +1019,10 @@ body[data-mode="demo"] .status::after {
 
 .phishing-suite {
   border-color: rgba(232, 111, 81, 0.28);
+}
+
+.rag-suite {
+  border-color: rgba(124, 92, 246, 0.28);
 }
 
 .suite-head {

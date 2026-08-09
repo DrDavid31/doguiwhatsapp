@@ -44,7 +44,7 @@
               <option value="Dueno">Dueno</option>
               <option value="RRHH">RRHH</option>
               <option value="Supervisor">Supervisor</option>
-              <option value="Empleado">Empleado</option>
+              <option value="Basico">Basico (acceso limitado)</option>
             </select>
           </label>
           <p id="loginError" class="login-error" hidden></p>
@@ -66,9 +66,11 @@
         <a href="#empleados">Empleados</a>
         <a href="#seguridad">Security Assistant</a>
         <a href="#phishing">Phishing Simulator</a>
-        <a href="#configuracion">Configuracion</a>
-        <a href="#integraciones">Integraciones</a>
-        <a href="#auditoria">Auditoria</a>
+        <a href="#rag">Experto Personal</a>
+        <a href="#configuracion" data-admin-only>Configuracion</a>
+        <a href="#integraciones" data-admin-only>Integraciones</a>
+        <a href="#auditoria" data-admin-only>Auditoria</a>
+        <a href="#bitacora-accesos" data-admin-only>Bitacora de accesos</a>
       </nav>
     </aside>
 
@@ -255,6 +257,41 @@
         </div>
       </section>
 
+      <section id="rag" class="product-suite rag-suite">
+        <div class="suite-head">
+          <div>
+            <p class="eyebrow">Producto estrella 3</p>
+            <h2>DOGUI Experto Personal (RAG)</h2>
+            <p>Manda tus PDFs y notas por WhatsApp: se indexan con IA 100% local (Ollama, sin nube) y te responde citando la fuente exacta. Tambien recuerda tus conversaciones anteriores.</p>
+          </div>
+          <div id="ragSuiteStats" class="suite-actions"></div>
+        </div>
+        <div class="suite-grid">
+          <article class="panel">
+            <h3>Base de conocimiento</h3>
+            <label>Empleado<select id="ragEmployee"></select></label>
+            <div id="ragDocuments" class="stack"></div>
+            <form id="ragUploadForm" class="form">
+              <label>Agregar nota o archivo (.pdf/.txt/.md)<input id="ragFile" type="file" accept=".pdf,.txt,.md" required /></label>
+              <button class="primary" type="submit">Agregar a la base de conocimiento</button>
+            </form>
+          </article>
+          <article class="panel wide-panel">
+            <div class="panel-head">
+              <div>
+                <h3>Pregunta a tu experto</h3>
+                <p>Respuestas basadas solo en tus materiales guardados, con la fuente citada.</p>
+              </div>
+            </div>
+            <div id="ragMessages" class="chat joule-messages"></div>
+            <form id="ragForm" class="joule-form">
+              <input id="ragInput" type="text" placeholder="Ej. Que dice mi manual sobre archivos sospechosos?" autocomplete="off" />
+              <button class="primary" type="submit">Preguntar</button>
+            </form>
+          </article>
+        </div>
+      </section>
+
       <section class="layout" hidden>
         <article id="whatsapp" class="panel">
           <div class="panel-head">
@@ -388,7 +425,7 @@
         </article>
       </section>
 
-      <section id="configuracion" class="layout">
+      <section id="configuracion" class="layout" data-admin-only>
         <article class="panel">
           <div class="panel-head">
             <div>
@@ -434,7 +471,7 @@
         </article>
       </section>
 
-      <section id="integraciones" class="layout">
+      <section id="integraciones" class="layout" data-admin-only>
         <article class="panel">
           <h2>WhatsApp Cloud API</h2>
           <div id="integrationStatus" class="stack"></div>
@@ -449,9 +486,35 @@
         </article>
       </section>
 
-      <section id="auditoria" class="panel">
+      <section id="auditoria" class="panel" data-admin-only>
         <h2>Auditoria</h2>
         <div id="auditList" class="stack"></div>
+      </section>
+
+      <section id="bitacora-accesos" class="panel" data-admin-only>
+        <div class="panel-head">
+          <div>
+            <h2>Bitacora de accesos</h2>
+            <p>Registro de cada intento de inicio de sesion, exitoso o no. Solo lectura, no se puede editar ni borrar.</p>
+          </div>
+        </div>
+        <form id="loginLogsFilters" class="report-filters">
+          <select id="loginLogsUser"></select>
+          <input id="loginLogsFrom" type="date" />
+          <input id="loginLogsTo" type="date" />
+          <button type="submit">Filtrar</button>
+        </form>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th><th>Correo</th><th>Usuario</th><th>Rol</th><th>Resultado</th><th>Motivo</th><th>IP</th><th>Navegador</th>
+              </tr>
+            </thead>
+            <tbody id="loginLogsTable"></tbody>
+          </table>
+        </div>
+        <div id="loginLogsPagination" class="pagination"></div>
       </section>
     </main>
 

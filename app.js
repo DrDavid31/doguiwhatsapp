@@ -6,6 +6,10 @@ const configuredApiBase = (window.DOGUI_API_BASE || localStorage.getItem("dogui-
 const API_BASE = configuredApiBase || (BACKEND_HOSTS.has(location.hostname) && (location.protocol === "http:" || location.protocol === "https:") ? "" : null);
 const HAS_BACKEND = API_BASE !== null;
 const DEMO_MODE = !HAS_BACKEND;
+const ADMIN_ROLES = new Set(["Dueno", "RRHH", "Supervisor"]);
+function isAdminSession() {
+  return Boolean(session) && ADMIN_ROLES.has(session.role);
+}
 const now = () => new Date();
 const makeId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 let syncingState = false;
@@ -306,6 +310,15 @@ function seedPresentationData() {
   saveState();
 }
 
+function demoLoginLogs() {
+  return [
+    { id: "demo-ll-1", userId: "usr-admin", userName: "Administrador", emailAttempted: "admin@empresa.mx", timestamp: demoTimestamp(1), success: true, failureReason: null, ipAddress: "187.190.12.44", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", roleAtLogin: "Dueno" },
+    { id: "demo-ll-2", userId: null, userName: null, emailAttempted: "carlos.mendez@empresa.mx", timestamp: demoTimestamp(3), success: false, failureReason: "user_not_found", ipAddress: "201.140.88.9", userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", roleAtLogin: null },
+    { id: "demo-ll-3", userId: "usr-admin", userName: "Administrador", emailAttempted: "admin@empresa.mx", timestamp: demoTimestamp(30), success: false, failureReason: "bad_password", ipAddress: "187.190.12.44", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", roleAtLogin: "Dueno" },
+    { id: "demo-ll-4", userId: "usr-admin", userName: "Administrador", emailAttempted: "admin@empresa.mx", timestamp: demoTimestamp(48), success: true, failureReason: null, ipAddress: "187.190.12.44", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", roleAtLogin: "Dueno" }
+  ];
+}
+
 function securityResponseFor(type) {
   const responses = {
     "Link sospechoso": "No abras el enlace. El equipo de seguridad lo revisara y bloqueara el dominio si aplica.",
@@ -450,6 +463,7 @@ async function hydrateFromBackend() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     backendUnreachable = false;
     render();
+    if (isAdminSession()) fetchLoginLogs(true);
   } catch (error) {
     console.warn("No se pudo cargar /api/state; usando localStorage", error);
     backendUnreachable = true;
@@ -1020,6 +1034,12 @@ function renderSelectors() {
   byId("securityEmployee").innerHTML = employees.length
     ? employees.map((employee) => `<option value="${escapeAttr(employee.id)}">${escapeHtml(employee.name)} - ${escapeHtml(employee.area)}</option>`).join("")
     : `<option value="">Sin empleados activos</option>`;
+  const ragSelected = byId("ragEmployee").value;
+  byId("ragEmployee").innerHTML = employees.length
+    ? employees.map((employee) => `<option value="${escapeAttr(employee.id)}">${escapeHtml(employee.name)}</option>`).join("")
+    : `<option value="">Sin empleados activos</option>`;
+  if (employees.some((employee) => employee.id === ragSelected)) byId("ragEmployee").value = ragSelected;
+  ragMaybeRefreshDocuments();
   const areas = ["Todas", ...new Set(state.employees.filter((employee) => employee.active).map((employee) => employee.area))];
   byId("reportArea").innerHTML = areas.map((area) => `<option>${escapeHtml(area)}</option>`).join("");
   byId("reportArea").value = state.report.area;
@@ -1345,6 +1365,228 @@ function renderAudit() {
   `).join("") || emptyState("Sin movimientos de auditoria.");
 }
 
+let loginLogsData = { items: [], total: 0, limit: 20, offset: 0 };
+let loginLogsFilters = { userId: "", from: "", to: "" };
+const loginLogsUsersSeen = new Map();
+
+function loginLogsFailureLabel(reason) {
+  const labels = {
+    bad_password: "Contrasena incorrecta",
+    user_not_found: "Usuario no encontrado",
+    account_locked: "Cuenta bloqueada"
+  };
+  return labels[reason] || "-";
+}
+
+async function fetchLoginLogs(resetOffset = false) {
+  if (!isAdminSession()) return;
+  if (resetOffset) loginLogsData.offset = 0;
+  if (DEMO_MODE) {
+    renderLoginLogs();
+    return;
+  }
+  const params = new URLSearchParams({ limit: String(loginLogsData.limit), offset: String(loginLogsData.offset) });
+  if (loginLogsFilters.userId) params.set("userId", loginLogsFilters.userId);
+  if (loginLogsFilters.from) params.set("from", `${loginLogsFilters.from}T00:00:00Z`);
+  if (loginLogsFilters.to) params.set("to", `${loginLogsFilters.to}T23:59:59Z`);
+  try {
+    const response = await apiFetch(`/api/access/login-logs?${params.toString()}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    loginLogsData = { ...loginLogsData, items: payload.items, total: payload.total };
+    payload.items.forEach((item) => {
+      if (item.userId) loginLogsUsersSeen.set(item.userId, item.userName || item.emailAttempted);
+    });
+  } catch (error) {
+    console.warn("No se pudo cargar la bitacora de accesos", error);
+    loginLogsData = { ...loginLogsData, items: [], total: 0 };
+  }
+  renderLoginLogs();
+}
+
+function renderLoginLogs() {
+  if (!isAdminSession()) return;
+  let items = loginLogsData.items;
+  let total = loginLogsData.total;
+  if (DEMO_MODE) {
+    const all = demoLoginLogs().filter((item) => {
+      if (loginLogsFilters.userId && item.userId !== loginLogsFilters.userId) return false;
+      if (loginLogsFilters.from && item.timestamp < `${loginLogsFilters.from}T00:00:00Z`) return false;
+      if (loginLogsFilters.to && item.timestamp > `${loginLogsFilters.to}T23:59:59Z`) return false;
+      return true;
+    });
+    all.forEach((item) => {
+      if (item.userId) loginLogsUsersSeen.set(item.userId, item.userName || item.emailAttempted);
+    });
+    total = all.length;
+    items = all.slice(loginLogsData.offset, loginLogsData.offset + loginLogsData.limit);
+  }
+  const userSelect = byId("loginLogsUser");
+  const selectedValue = loginLogsFilters.userId;
+  userSelect.innerHTML = `<option value="">Todos los usuarios</option>${Array.from(loginLogsUsersSeen.entries())
+    .map(([id, label]) => `<option value="${escapeAttr(id)}">${escapeHtml(label)}</option>`)
+    .join("")}`;
+  userSelect.value = selectedValue;
+
+  byId("loginLogsTable").innerHTML = items.map((item) => `
+    <tr>
+      <td>${formatDate(item.timestamp)} ${formatTime(item.timestamp)}</td>
+      <td>${escapeHtml(item.emailAttempted)}</td>
+      <td>${escapeHtml(item.userName || "-")}</td>
+      <td>${escapeHtml(item.roleAtLogin || "-")}</td>
+      <td><span class="pill ${item.success ? "ok" : "danger"}">${item.success ? "Exitoso" : "Fallido"}</span></td>
+      <td>${escapeHtml(loginLogsFailureLabel(item.failureReason))}</td>
+      <td>${escapeHtml(item.ipAddress || "-")}</td>
+      <td>${escapeHtml((item.userAgent || "-").slice(0, 60))}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="8">${emptyState("Sin accesos registrados.")}</td></tr>`;
+
+  const from = total === 0 ? 0 : loginLogsData.offset + 1;
+  const to = Math.min(loginLogsData.offset + loginLogsData.limit, total);
+  byId("loginLogsPagination").innerHTML = `
+    <span>${from}-${to} de ${total}</span>
+    <button type="button" data-page="prev" ${loginLogsData.offset === 0 ? "disabled" : ""}>Anterior</button>
+    <button type="button" data-page="next" ${to >= total ? "disabled" : ""}>Siguiente</button>
+  `;
+}
+
+let ragMessages = [];
+let ragDemoDocuments = [
+  { id: "demo-doc-1", filename: "politica_vacaciones.pdf", chunkCount: 4 },
+  { id: "demo-doc-2", filename: "manual_seguridad.pdf", chunkCount: 6 }
+];
+let ragRealDocuments = [];
+let ragLastFetchedEmployeeId = null;
+let ragBusy = false;
+
+const RAG_DEMO_SKILLS = [
+  {
+    test: (t) => /vacacion/.test(t),
+    answer: "Segun tu politica de vacaciones: se acumulan 12 dias por cada ano trabajado y deben solicitarse con al menos 5 dias de anticipacion.\n\nFuentes: politica_vacaciones.pdf (pag. 1)"
+  },
+  {
+    test: (t) => /(archivo|link|correo).*(sospech|raro|fraude)|seguridad|virus/.test(t),
+    answer: "Segun tu manual de seguridad: cualquier archivo .exe, .zip o .scr recibido por WhatsApp debe reportarse de inmediato con el comando 'archivo raro' y nunca debe abrirse.\n\nFuentes: manual_seguridad.pdf (pag. 2)"
+  }
+];
+
+function ragDemoAnswer(text) {
+  const normalized = text.toLowerCase();
+  const skill = RAG_DEMO_SKILLS.find((item) => item.test(normalized));
+  if (skill) return skill.answer;
+  return "No encontre eso en tus materiales de ejemplo (prueba preguntando sobre 'vacaciones' o 'archivo sospechoso'). Conectado a Ollama en tu equipo, buscaria de verdad en todos tus PDFs y notas indexados.";
+}
+
+function ragRenderMessages() {
+  const box = byId("ragMessages");
+  box.innerHTML = ragMessages.length
+    ? ragMessages.map((msg) => `<div class="bubble joule-bubble ${msg.role === "user" ? "system" : ""}">${escapeHtml(msg.text).replaceAll("\n", "<br>")}</div>`).join("")
+    : emptyState("Preguntale a tu experto sobre tus documentos guardados.");
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderRagSuite() {
+  const docs = DEMO_MODE ? ragDemoDocuments : ragRealDocuments;
+  byId("ragSuiteStats").innerHTML = `<span class="pill ok">${docs.length} documento(s) indexado(s)</span>`;
+  byId("ragDocuments").innerHTML = docs.length
+    ? docs.map((doc) => `
+      <div class="row-card">
+        <div><strong>${escapeHtml(doc.filename)}</strong><span>${doc.chunkCount ?? doc.chunk_count ?? 0} fragmento(s) indexados</span></div>
+      </div>
+    `).join("")
+    : emptyState("Sin documentos indexados todavia.");
+  ragRenderMessages();
+}
+
+async function ragRefreshDocuments() {
+  if (DEMO_MODE) return;
+  try {
+    const response = await apiFetch("/api/rag/documents");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const all = await response.json();
+    const employeeId = byId("ragEmployee").value;
+    ragRealDocuments = all.filter((doc) => doc.employee_id === employeeId);
+  } catch (error) {
+    console.warn("No se pudieron cargar los documentos del RAG", error);
+    ragRealDocuments = [];
+  }
+  renderRagSuite();
+}
+
+function ragMaybeRefreshDocuments() {
+  if (DEMO_MODE || !HAS_BACKEND) return;
+  const employeeId = byId("ragEmployee").value;
+  if (!employeeId || employeeId === ragLastFetchedEmployeeId) return;
+  ragLastFetchedEmployeeId = employeeId;
+  ragRefreshDocuments();
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function ragUpload(file) {
+  if (DEMO_MODE) {
+    ragDemoDocuments.push({ id: `demo-doc-${Date.now()}`, filename: file.name, chunkCount: Math.max(1, Math.round(file.size / 900)) });
+    renderRagSuite();
+    return;
+  }
+  const employeeId = byId("ragEmployee").value;
+  if (!employeeId) throw new Error("Selecciona un empleado primero.");
+  const contentBase64 = await fileToBase64(file);
+  const response = await apiFetch("/api/rag/ingest", {
+    method: "POST",
+    body: { employeeId, filename: file.name, contentBase64 }
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+  }
+  ragLastFetchedEmployeeId = null;
+  await ragRefreshDocuments();
+}
+
+async function ragAsk(text) {
+  if (DEMO_MODE) return ragDemoAnswer(text);
+  const employeeId = byId("ragEmployee").value;
+  if (!employeeId) return "Selecciona primero un empleado.";
+  const response = await apiFetch("/api/rag/ask", {
+    method: "POST",
+    body: { employeeId, question: text }
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  let answer = payload.answer;
+  if (payload.sources?.length) answer += `\n\nFuentes: ${payload.sources.join(", ")}`;
+  return answer;
+}
+
+async function ragSubmit(rawText) {
+  const clean = rawText.trim();
+  if (!clean || ragBusy) return;
+  ragBusy = true;
+  ragMessages.push({ role: "user", text: clean });
+  ragRenderMessages();
+  byId("ragInput").value = "";
+  byId("ragMessages").insertAdjacentHTML("beforeend", `<div class="bubble joule-bubble joule-thinking">Pensando...</div>`);
+  byId("ragMessages").scrollTop = byId("ragMessages").scrollHeight;
+  try {
+    ragMessages.push({ role: "assistant", text: await ragAsk(clean) });
+  } catch (error) {
+    ragMessages.push({ role: "assistant", text: `Tuve un problema para responder: ${error.message}` });
+  }
+  ragRenderMessages();
+  ragBusy = false;
+}
+
 function jouleUpdateBadge() {
   const badge = byId("jouleBadge");
   if (!session) {
@@ -1365,7 +1607,18 @@ function renderSession() {
   const company = state.companies.find((item) => item.id === state.selectedCompanyId) || state.companies[0] || { name: "DOGUI" };
   byId("sessionLabel").textContent = session ? `${company.name} - ${session.user} - ${session.role} - ${mode}` : `${company.name} - ${mode}`;
   byId("backendWarning").hidden = !(HAS_BACKEND && backendUnreachable);
+  applyRoleVisibility();
   jouleUpdateBadge();
+}
+
+// La navegacion se arma segun el rol de la sesion activa (no se puede manipular
+// desde localStorage): el servidor sigue siendo la unica fuente de verdad para
+// los permisos, esto solo evita que "Basico" vea enlaces/paneles que no puede usar.
+function applyRoleVisibility() {
+  const admin = isAdminSession();
+  document.querySelectorAll("[data-admin-only]").forEach((el) => {
+    el.classList.toggle("hidden", !admin);
+  });
 }
 
 function render() {
@@ -1388,7 +1641,9 @@ function render() {
   renderIntegrations();
   renderSecurityAssistant();
   renderPhishingSimulator();
+  renderRagSuite();
   renderAudit();
+  renderLoginLogs();
   if (jouleOpen) jouleRenderQuickPrompts();
 }
 
@@ -2295,6 +2550,24 @@ byId("reportFilters").addEventListener("submit", (event) => {
   render();
 });
 
+byId("loginLogsFilters").addEventListener("submit", (event) => {
+  event.preventDefault();
+  loginLogsFilters = {
+    userId: byId("loginLogsUser").value,
+    from: byId("loginLogsFrom").value,
+    to: byId("loginLogsTo").value
+  };
+  fetchLoginLogs(true);
+});
+
+byId("loginLogsPagination").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-page]");
+  if (!button || button.disabled) return;
+  if (button.dataset.page === "prev") loginLogsData.offset = Math.max(0, loginLogsData.offset - loginLogsData.limit);
+  if (button.dataset.page === "next") loginLogsData.offset += loginLogsData.limit;
+  fetchLoginLogs();
+});
+
 byId("companySelect").addEventListener("change", () => {
   state.selectedCompanyId = byId("companySelect").value;
   state.selectedBranchId = state.branches.find((branch) => branch.companyId === state.selectedCompanyId)?.id || state.branches[0]?.id || "";
@@ -2337,6 +2610,26 @@ byId("jouleForm").addEventListener("submit", (event) => {
 byId("jouleQuickPrompts").addEventListener("click", (event) => {
   const chip = event.target.closest(".joule-chip");
   if (chip) jouleSubmit(chip.dataset.prompt);
+});
+
+byId("ragEmployee").addEventListener("change", () => {
+  ragLastFetchedEmployeeId = null;
+  ragMaybeRefreshDocuments();
+});
+byId("ragUploadForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const file = byId("ragFile").files[0];
+  if (!file) return;
+  try {
+    await ragUpload(file);
+  } catch (error) {
+    alert(`No se pudo agregar el archivo: ${error.message}`);
+  }
+  event.target.reset();
+});
+byId("ragForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  ragSubmit(byId("ragInput").value);
 });
 window.addEventListener("hashchange", () => {
   if (jouleOpen) jouleRenderQuickPrompts();
